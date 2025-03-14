@@ -8,6 +8,12 @@ from bs4 import BeautifulSoup
 from fake_useragent import UserAgent
 import time
 import random
+from openpyxl import load_workbook
+from openpyxl.styles import Alignment
+
+import platform
+from datetime import datetime
+
 
 # 设置日志
 logging.basicConfig(level=getattr(logging, config.LOG_LEVEL))
@@ -22,6 +28,16 @@ class MarketDataAnalyzer:
         )
         # 初始化User-Agent生成器
         self.ua = UserAgent()
+
+    def format_cn_date(self,raw_date):
+        # 解析中文月份
+        dt = datetime.strptime(raw_date, "%m月 %d, %Y")
+
+        # 判断操作系统
+        if platform.system() == "Windows":
+            return dt.strftime("%Y/%#m/%d")
+        else:  # Linux/macOS
+            return dt.strftime("%Y/%-m/%d")
 
     def get_data_by_openai(self, url):
         """
@@ -63,105 +79,141 @@ class MarketDataAnalyzer:
     def get_data_by_crawler(self, url):
         """
         使用爬虫直接获取市场数据
-
-        Args:
-            url (str): 需要爬取的URL
-
-        Returns:
-            dict: 包含爬取数据的字典
         """
         try:
             headers = {
                 'User-Agent': self.ua.random,
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
+                'Accept-Language': 'zh-CN,zh;q=0.8,en-US;q=0.5,en;q=0.3',
                 'Connection': 'keep-alive',
+                'Referer': 'https://cn.investing.com/',
+                'Upgrade-Insecure-Requests': '1',
+                'Cache-Control': 'max-age=0',
             }
 
-            # 添加随机延时避免被封
+            # 添加随机延时
             time.sleep(2 + random.random() * 3)
 
-            response = requests.get(url, headers=headers, timeout=10)
+            # 发送请求
+            logger.info(f"正在请求URL: {url}")
+            response = requests.get(url, headers=headers, timeout=15)
             response.raise_for_status()
 
             soup = BeautifulSoup(response.text, 'html.parser')
 
-            # 获取汇率数据（以investing.com为例）
-            try:
-                current_price = soup.find('span', {'data-test': 'instrument-price-last'}).text.strip()
-                change_percent = soup.find('span', {'data-test': 'instrument-price-change-percent'}).text.strip()
-            except AttributeError:
-                logger.warning("无法找到特定元素，尝试备用选择器")
-                current_price = soup.find('span', class_='text-2xl').text.strip()
-                change_percent = soup.find('span', class_='pill').text.strip()
+            # 更精准的选择器：通过类名定位第一行数据
+            first_row = soup.select_one('tr.historical-data-v2_price__atUfP')
+            if not first_row:
+                logger.error("未找到数据行，请检查HTML结构或反爬机制")
+                return None
 
-            return {
-                'source': 'crawler',
-                'timestamp': datetime.now().isoformat(),
-                'current_price': current_price,
-                'change_percent': change_percent,
-                'raw_html': response.text  # 保存原始HTML以备后续分析
+            # 提取数据
+            date = first_row.find('time').text.strip()
+            cells = first_row.find_all('td')
+
+            # 构造返回结果
+            result = {
+                "日期": self.format_cn_date(date),
+                "收盘": cells[1].text.strip(),
+                "开盘": cells[2].text.strip(),
+                "高": cells[3].text.strip(),
+                "低": cells[4].text.strip(),
+                "涨跌幅": cells[6].text.strip() if len(cells) > 6 else "N/A"
             }
 
+
+            logger.info(f"成功爬取数据: {result}")
+            return result
+
         except requests.RequestException as e:
-            logger.error(f"爬虫获取数据失败: {str(e)}")
+            logger.error(f"网络请求失败: {str(e)}")
             return None
         except Exception as e:
-            logger.error(f"解析数据时出错: {str(e)}")
+            logger.error(f"爬取过程出错: {str(e)}", exc_info=True)
             return None
+
+
 
     def update_excel(self, method='both'):
         """
-        更新Excel文件，可以选择数据获取方式
-
-        Args:
-            method (str): 'openai', 'crawler', 或 'both'
+        更新现有Excel文件，追加数据到对应sheet的最后一行
         """
         try:
             results = {}
             for pair, url in config.CURRENCY_PAIRS.items():
                 print(f"\n正在分析 {pair} 的数据...")
-
                 data = {}
+                if method in ['crawler', 'both']:
+                    crawler_data = self.get_data_by_crawler(url)
+                    if crawler_data:
+                        data = crawler_data
+                        print(f"成功获取 {pair} 的爬虫数据")
+
                 if method in ['openai', 'both']:
                     openai_data = self.get_data_by_openai(url)
                     if openai_data:
                         data['openai_analysis'] = openai_data['analysis']
-
-                if method in ['crawler', 'both']:
-                    crawler_data = self.get_data_by_crawler(url)
-                    if crawler_data:
-                        # 直接将爬虫获取的数据赋值给data，保留原始HTML
-                        data = crawler_data
-                        # 打印关键信息用于调试
-                        print(f"货币对: {pair}")
-                        print(f"当前价格: {crawler_data.get('current_price', 'N/A')}")
-                        print(f"变化百分比: {crawler_data.get('change_percent', 'N/A')}")
-                        print(f"原始HTML长度: {len(crawler_data.get('raw_html', ''))}")
-
-                        # 可选：保存原始HTML到文件进行检查
-                        if 'raw_html' in crawler_data and crawler_data['raw_html']:
-                            html_filename = f"{pair}_raw_html.html"
-                            with open(html_filename, 'w', encoding='utf-8') as f:
-                                f.write(crawler_data['raw_html'])
-                            print(f"原始HTML已保存到文件: {html_filename}")
+                        print(f"成功获取 {pair} 的OpenAI分析数据")
 
                 results[pair] = data
 
-            # 调试模式：不执行Excel逻辑，只返回结果
-            print("\n爬虫测试结果:")
-            for pair, data in results.items():
-                print(f"{pair}: {data.keys()}")
+            # 加载现有Excel文件
+            wb = load_workbook(config.EXCEL_OUTPUT_PATH)
+            print(wb.sheetnames)
 
-            return results  # 返回结果以便进一步调试
+            for sheet_name, data in results.items():
+                if sheet_name not in wb.sheetnames:
+                    logger.warning(f"工作表 {sheet_name} 不存在，跳过...")
+                    continue
 
-            # 注释掉Excel相关逻辑
-            # df = pd.DataFrame.from_dict(results, orient='index')
-            # df.to_excel(config.EXCEL_OUTPUT_PATH)
-            # logger.info(f"分析结果已保存到 {config.EXCEL_OUTPUT_PATH}")
+                ws = wb[sheet_name]
+
+                # 手动定义列顺序（根据你的Excel实际列名调整）
+                expected_headers = ["日期", "收盘", "开盘", "高", "低", "交易量", "涨跌幅"]
+
+                # 按固定顺序填充数据
+                row_data = [
+                    data.get("日期", ""),
+                    data.get("收盘", ""),
+                    data.get("开盘", ""),
+                    data.get("高", ""),
+                    data.get("低", ""),
+                    data.get("交易量", ""),
+                    data.get("涨跌幅", "")
+                ]
+
+                  # 方法1：直接追加到末尾（默认行为）
+                # ws.append(row_data)
+
+                # 方法2：查找实际最后一行（解决空白行问题）
+                def find_last_row(sheet):
+                    # 逆向查找第一个非空行
+                    for row in reversed(range(1, sheet.max_row + 1)):
+                        if any(cell.value for cell in sheet[row]):
+                            return row
+                    return 1  # 如果全为空，从第一行开始
+
+                last_row = find_last_row(ws)
+                target_row = last_row + 1
+
+                # 写入数据到目标行
+                for col, value in enumerate(row_data, start=1):
+                    ws.cell(row=target_row, column=col, value=value)
+
+                # 设置对齐和格式
+                right_align = Alignment(horizontal='right')
+                for col in range(1, len(row_data) + 1):
+                    ws.cell(row=target_row, column=col).alignment = right_align
+
+                logger.info(f"已为 {sheet_name} 在第 {target_row} 行追加新数据")
+
+            # 保存修改
+            wb.save(config.EXCEL_OUTPUT_PATH)
+            logger.info(f"数据已成功保存到 {config.EXCEL_OUTPUT_PATH}")
+            return results
 
         except Exception as e:
-            logger.error(f"爬虫测试过程中出错: {str(e)}")
+            logger.error(f"更新Excel过程中出错: {str(e)}", exc_info=True)
             return None
 
 if __name__ == "__main__":

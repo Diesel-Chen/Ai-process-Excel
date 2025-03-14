@@ -9,10 +9,12 @@ OPENAI_TEMPERATURE = 0.7
 
 # 市场数据URL配置
 CURRENCY_PAIRS = {
-    'USD/CNY': 'https://cn.investing.com/currencies/usd-cny',
-    # 可以添加更多货币对
-    # 'EUR/CNY': 'https://cn.investing.com/currencies/eur-cny',
-    # 'GBP/CNY': 'https://cn.investing.com/currencies/gbp-cny',
+    'USD CNY': 'https://cn.investing.com/currencies/usd-cny-historical-data',
+    'EUR CNY': 'https://cn.investing.com/currencies/eur-cny-historical-data',
+    'EUR USD': 'https://cn.investing.com/currencies/eur-usd-historical-data',
+    'HKD CNY': 'https://cn.investing.com/currencies/hkd-cny-historical-data',
+    'CNY HKD': 'https://cn.investing.com/currencies/cny-hkd-historical-data',
+    'JPY USD': 'https://cn.investing.com/currencies/jpy-usd-historical-data',
 }
 
 # 系统提示配置
@@ -34,4 +36,5 @@ ANALYSIS_PROMPT_TEMPLATE = """
 LOG_LEVEL = "INFO"
 
 # Excel配置
-EXCEL_OUTPUT_PATH = "market_data_analysis.xlsx"
+EXCEL_OUTPUT_PATH = "market_index.xlsx"
+
