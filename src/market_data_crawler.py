@@ -695,6 +695,60 @@ class MarketDataAnalyzer:
             if driver:
                 driver.quit()
 
+    def crawl_jpy_rate(self, url):
+        """
+        爬取页面jpy_rate数据
+
+        Args:
+            url (str): 数据URL
+        """
+        driver = self.get_webdriver()
+        driver.get(url)
+        logger.info(f"正在请求URL: {url}")
+
+        try:
+            time.sleep(3)
+            # 定位第一个表格（两种方式任选其一）
+            # 方式1：通过CSS选择器列表索引
+            table = driver.find_element(By.CSS_SELECTOR, "table.table[class='table ']")
+            if not table:
+                logger.error("未找到目标表格")
+                return []
+
+
+
+            # 获取有效数据行（跳过表头）
+            rows = table.find_elements(By.CSS_SELECTOR, "tr:has(td)")
+
+            result_list = []
+
+            # 处理前两行数据
+            for row in rows[:2]:
+                cells = row.find_elements(By.TAG_NAME, "td")
+
+                # 验证数据完整性
+                if len(cells) != 2:
+                    logger.warning(f"异常行数据，跳过。实际列数：{len(cells)}")
+                    continue
+
+                # 创建格式化记录
+                record = {
+                    "日期": cells[0].text.strip(),
+                    "value": cells[1].text.strip().replace(' %', '')
+                }
+                result_list.append(record)
+
+            logger.info(f"成功抓取 {len(result_list)} 条记录")
+            print(f"DEBUG - 抓取结果: {result_list}")  # 调试输出
+            return result_list
+
+        except Exception as e:
+            logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
+            return []
+        finally:
+            if driver:
+                driver.quit()
+
 
 if __name__ == "__main__":
     # 初始化分析器
@@ -706,7 +760,9 @@ if __name__ == "__main__":
     # analyzer.crawl_shibor_rate('https://www.shibor.org/shibor/index.html')
     # analyzer.crawl_lpr('https://www.shibor.org/shibor/index.html')
     # analyzer.crawl_sofr('https://www.newyorkfed.org/markets/reference-rates/sofr')
-    analyzer.crawl_ester('https://www.euribor-rates.eu/en/ester/')
+    # analyzer.crawl_ester('https://www.euribor-rates.eu/en/ester/')
+    analyzer.crawl_jpy_rate('https://www.global-rates.com/en/interest-rates/central-banks/9/japanese-boj-overnight-call-rate/')
+
 
 
 
