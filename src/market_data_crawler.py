@@ -584,6 +584,62 @@ class MarketDataAnalyzer:
             if driver:
                 driver.quit()
 
+    def crawl_sofr(self, url):
+        """
+        爬取SOFR数据并按指定顺序返回前两行数据
+
+        Args:
+            url (str): 数据URL
+
+        Returns:
+            list: 包含前两行数据的字典列表，按指定字段顺序排列
+        """
+        driver = self.get_webdriver()
+        driver.get(url)
+        logger.info(f"正在请求URL: {url}")
+
+        try:
+            time.sleep(3)  # 等待页面加载
+            table = driver.find_element(By.ID, 'pr_id_1-table')
+
+            # 获取所有数据行（跳过可能存在的表头）
+            rows = table.find_elements(By.CSS_SELECTOR, "tr:has(td)")
+
+            result_list = []
+
+            # 处理前两行数据
+            for row in rows[:2]:
+                cells = row.find_elements(By.TAG_NAME, "td")
+
+                # 确保列数足够
+                if len(cells) < 7:
+                    logger.warning(f"检测到不完整行，实际列数：{len(cells)}")
+                    continue
+
+                # 按顺序提取字段
+                record = {
+                    "日期": cells[0].text.strip(),
+                    "RATE(%)": cells[1].text.strip(),
+                    "1ST PERCENTILE(%)": cells[2].text.strip(),
+                    "25TH PERCENTILE(%)": cells[3].text.strip(),
+                    "75TH PERCENTILE(%)": cells[4].text.strip(),
+                    "99TH PERCENTILE(%)": cells[5].text.strip(),
+                    "VOLUME ($Billions)": cells[6].text.strip()
+                }
+                result_list.append(record)
+
+            logger.info(f"成功抓取 {len(result_list)} 条记录")
+            print(result_list)
+            return result_list
+
+        except Exception as e:
+            logger.error(f"数据抓取失败: {str(e)}", exc_info=True)
+            return []
+        finally:
+            if driver:
+                driver.quit()
+
+
 if __name__ == "__main__":
     # 初始化分析器
     analyzer = MarketDataAnalyzer()
@@ -591,6 +647,9 @@ if __name__ == "__main__":
     print("更新所有数据...")
     # results = analyzer.update_excel('crawler')
     # analyzer.crawl_steel_price('https://index.mysteel.com/xpic/detail.html?tabName=kuangsi')
-    analyzer.crawl_lpr('https://www.shibor.org/shibor/index.html')
+    # analyzer.crawl_shibor_rate('https://www.shibor.org/shibor/index.html')
+    # analyzer.crawl_lpr('https://www.shibor.org/shibor/index.html')
+    analyzer.crawl_sofr('https://www.newyorkfed.org/markets/reference-rates/sofr')
+
 
     print("\n程序运行结束")
