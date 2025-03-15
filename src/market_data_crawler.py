@@ -527,6 +527,63 @@ class MarketDataAnalyzer:
             if driver:
                 driver.quit()
 
+    def crawl_lpr(self, url):
+        """
+        爬取LPR数据
+
+        Args:
+            url (str): 数据URL
+        """
+        # 获取WebDriver实例
+        driver = self.get_webdriver()
+        driver.get(url)
+        logger.info(f"正在请求URL: {url}")
+
+        try:
+
+            time.sleep(3)  # 等待页面加载
+            # 新式定位方法（Selenium 4.x+语法）
+            table = driver.find_element(By.ID, 'lpr-table')
+
+           # 提取关键数据
+            date_str = driver.find_element(By.ID, "home-lpr-date")\
+                        .text.strip()\
+                        .replace("\xa0", " ")
+
+            # 初始化结果数组
+            result_list = []
+
+            # 处理数据表格
+            current_record = {"日期": date_str}
+
+            for row in table.find_elements(By.CSS_SELECTOR, "tr:has(td)"):  # 只处理有td的行
+                cells = row.find_elements(By.TAG_NAME, "td")
+                if len(cells) < 3:
+                    continue
+
+                term = cells[1].text.strip()
+                rate = cells[2].text.strip()
+
+                # 只收集目标期限类型
+                if term in ['1Y', '5Y']:
+                    current_record[term] = rate
+
+            # 验证数据完整性后添加到数组
+            if len(current_record) >= 3:  # 日期+3个期限
+                result_list.append(current_record)
+            else:
+                print("数据不完整，已丢弃当前记录")
+
+            print(result_list)
+            return result_list
+
+        except Exception as e:
+            print(f"数据抓取失败: {str(e)}")
+            return []
+        finally:
+            if driver:
+                driver.quit()
+
 if __name__ == "__main__":
     # 初始化分析器
     analyzer = MarketDataAnalyzer()
@@ -534,6 +591,6 @@ if __name__ == "__main__":
     print("更新所有数据...")
     # results = analyzer.update_excel('crawler')
     # analyzer.crawl_steel_price('https://index.mysteel.com/xpic/detail.html?tabName=kuangsi')
-    analyzer.crawl_shibor_rate('https://www.shibor.org/shibor/index.html')
+    analyzer.crawl_lpr('https://www.shibor.org/shibor/index.html')
 
     print("\n程序运行结束")
