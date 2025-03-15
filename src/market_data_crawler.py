@@ -338,6 +338,7 @@ class MarketDataAnalyzer:
         爬取钢铁价格数据（修复StaleElement异常版）
         """
         from selenium.common.exceptions import StaleElementReferenceException
+        logger.info(f"正在请求URL: {url}")
         driver = webdriver.Chrome()
         driver.get(url)
 
@@ -399,64 +400,56 @@ class MarketDataAnalyzer:
         finally:
             driver.quit()
 
+    def crawl_shibor_rate(self,url):
+        # Chrome选项设置
+        driver = webdriver.Chrome()
+        driver.get(url)
+        logger.info(f"正在请求URL: {url}")
 
-    def crawl_shibor_rate(self, url):
-        """
-        使用爬虫直接获取 Shibor 数据（改进版）
-        """
         try:
-            headers = {
-                'User-Agent': self.ua.random,
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
-                'Referer': 'https://www.shibor.org/shibor/',
-                'Connection': 'keep-alive',
-                'DNT': '1',
-                'Pragma': 'no-cache',
-                'Cache-Control': 'no-cache',
-            }
 
-            time.sleep(random.uniform(1.5, 3.5))
+            time.sleep(3)  # 等待页面加载
+            # 新式定位方法（Selenium 4.x+语法）
+            table = driver.find_element(By.ID, 'shiborData')
 
-            logger.info(f"正在请求 URL: {url}")
-            response = requests.get(url, headers=headers, timeout=20)
-            response.encoding = 'utf-8'  # 强制设置编码
+           # 提取关键数据
+            date_str = driver.find_element(By.ID, "home-shibor-date")\
+                        .text.strip()\
+                        .replace("\xa0", " ")
 
-            # 调试保存
-            with open("debug_page.html", "w", encoding="utf-8") as f:
-                f.write(response.text)
+            # 初始化结果数组
+            result_list = []
 
-            soup = BeautifulSoup(response.text, 'lxml')  # 使用更快的lxml解析器
+            # 处理数据表格
+            current_record = {"日期": date_str}
 
-            # 更精准的定位方式
-            table = soup.select_one('table#shiborData')
-            if not table:
-                table = soup.find('table', {'id': 'shiborData'})
+            for row in table.find_elements(By.CSS_SELECTOR, "tr:has(td)"):  # 只处理有td的行
+                cells = row.find_elements(By.TAG_NAME, "td")
+                if len(cells) < 3:
+                    continue
 
-            result = []
-            if table:
-                # 处理可能存在的tbody
-                tbody = table.find('tbody') or table
-                for tr in tbody.find_all('tr'):
-                    # 跳过空行（最后两个tr没有td）
-                    tds = tr.find_all('td', recursive=True)
-                    if len(tds) < 3:
-                        continue
+                term = cells[1].text.strip()
+                rate = cells[2].text.strip()
 
-                    # 提取第三个td的文本
-                    value = tds[2].get_text(strip=True)
-                    if value.replace('.', '').isdigit():
-                        result.append(value)
+                # 只收集目标期限类型
+                if term in ['O/N', '1W', '2W', '1M', '3M', '6M', '9M', '1Y']:
+                    current_record[term] = rate
 
-                logger.info(f"解析到 {len(result)} 条数据: {result}")
-                return result if result else None
+            # 验证数据完整性后添加到数组
+            if len(current_record) >= 9:  # 日期+8个期限
+                result_list.append(current_record)
             else:
-                logger.warning("未找到shiborData表格")
-                return None
+                print("数据不完整，已丢弃当前记录")
+
+            print(result_list)
+            return result_list
 
         except Exception as e:
-            logger.error(f"爬取失败: {str(e)}", exc_info=True)
-            return None
+            print(f"数据抓取失败: {str(e)}")
+            return []
+        finally:
+            if driver:
+                driver.quit()
 
 if __name__ == "__main__":
     analyzer = MarketDataAnalyzer()
