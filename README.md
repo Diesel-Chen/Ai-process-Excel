@@ -6,9 +6,12 @@
 
 - 支持多个货币对的数据获取
 - 自动更新 Excel 文件中的对应 sheet
-- 支持 Windows 和 Mac 平台
+- 支持 Windows、Mac 和 Linux 平台
 - 包含错误处理和重试机制
 - 使用随机 User-Agent 避免被封禁
+- 使用无头模式（不显示浏览器窗口）
+- 自动下载和管理 WebDriver，无需手动安装
+- 支持多种浏览器（Chrome、Firefox、Edge）
 
 ## 支持的货币对
 
@@ -23,6 +26,7 @@
 
 - Python 3.8+
 - pip 包管理器
+- 至少安装了以下浏览器之一：Chrome、Firefox 或 Edge
 
 ## 安装步骤
 
@@ -42,6 +46,8 @@ pip install -r requirements.txt
 python src/market_data_crawler.py
 ```
 
+程序会自动在无头模式下运行，不会显示浏览器窗口，并使用爬虫方式获取所有数据。
+
 ## 输出文件
 
 脚本会在`data`目录下创建或更新`market_index.xlsx`文件，每个货币对的数据会保存在对应的 sheet 中。
@@ -51,3 +57,19 @@ python src/market_data_crawler.py
 - 脚本包含适当的延时以避免频繁请求
 - 建议不要过于频繁地运行脚本，以免被网站封禁
 - 确保网络连接正常
+- 首次运行时，WebDriver Manager 会自动下载适合您系统的 WebDriver
+- 如果您的系统没有安装任何受支持的浏览器，程序会提示错误
+
+## 跨平台支持
+
+- **Windows**: 完全支持，自动下载适合 Windows 的 WebDriver
+- **macOS**: 完全支持，自动下载适合 macOS 的 WebDriver
+- **Linux**: 完全支持，自动下载适合 Linux 的 WebDriver
+
+## 故障排除
+
+如果遇到问题，请尝试以下步骤：
+
+1. 确保已安装最新版本的浏览器
+2. 检查网络连接
+3. 更新依赖包：`pip install -r requirements.txt --upgrade`

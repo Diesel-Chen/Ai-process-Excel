@@ -13,11 +13,17 @@ from openpyxl.styles import Alignment
 
 import platform
 from datetime import datetime
+import os
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+from webdriver_manager.firefox import GeckoDriverManager
+from webdriver_manager.microsoft import EdgeChromiumDriverManager
 
 
 # 设置日志
@@ -153,6 +159,9 @@ class MarketDataAnalyzer:
     def update_excel(self, method='both'):
         """
         更新现有Excel文件，追加数据到对应sheet的最后一行（检查日期是否重复）
+
+        Args:
+            method (str): 数据获取方法，可选值为'crawler'、'openai'或'both'
         """
         MAX_RETRIES = 3  # 最大重试次数
         try:
@@ -165,7 +174,14 @@ class MarketDataAnalyzer:
                     retries = 0
                     while retries < MAX_RETRIES:
                         try:
-                            crawler_data = self.crawl_exchange_rate(url)
+                            # 对于需要使用Selenium的特殊URL，使用相应的爬虫方法
+                            if 'mysteel.com' in url:
+                                crawler_data = self.crawl_steel_price(url)
+                            elif 'shibor.org' in url:
+                                crawler_data = self.crawl_shibor_rate(url)
+                            else:
+                                crawler_data = self.crawl_exchange_rate(url)
+
                             if crawler_data:
                                 data = crawler_data
                                 print(f"成功获取 {pair} 的爬虫数据")
@@ -333,13 +349,67 @@ class MarketDataAnalyzer:
                 return row
         return 1  # 如果全为空，从第一行开始
 
-    def crawl_steel_price(self,url):
+    def get_webdriver(self):
+        """
+        获取WebDriver实例，支持多种浏览器，使用无头模式
+
+        Returns:
+            WebDriver: 浏览器驱动实例
+        """
+        try:
+            # 首先尝试Chrome
+            options = Options()
+            options.add_argument('--headless')
+            options.add_argument('--no-sandbox')
+            options.add_argument('--disable-dev-shm-usage')
+            options.add_argument('--disable-gpu')
+            options.add_argument(f'user-agent={self.ua.random}')
+
+            # 使用webdriver_manager自动下载和管理驱动
+            service = Service(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=options)
+            logger.info("成功初始化Chrome WebDriver")
+            return driver
+        except Exception as e:
+            logger.warning(f"Chrome WebDriver初始化失败: {str(e)}")
+
+            try:
+                # 尝试Firefox
+                from selenium.webdriver.firefox.options import Options as FirefoxOptions
+                options = FirefoxOptions()
+                options.add_argument('--headless')
+
+                service = Service(GeckoDriverManager().install())
+                driver = webdriver.Firefox(service=service, options=options)
+                logger.info("成功初始化Firefox WebDriver")
+                return driver
+            except Exception as e:
+                logger.warning(f"Firefox WebDriver初始化失败: {str(e)}")
+
+                try:
+                    # 最后尝试Edge
+                    from selenium.webdriver.edge.options import Options as EdgeOptions
+                    options = EdgeOptions()
+                    options.add_argument('--headless')
+
+                    service = Service(EdgeChromiumDriverManager().install())
+                    driver = webdriver.Edge(service=service, options=options)
+                    logger.info("成功初始化Edge WebDriver")
+                    return driver
+                except Exception as e:
+                    logger.error(f"所有WebDriver初始化都失败: {str(e)}")
+                    raise Exception("无法初始化任何WebDriver，请确保至少安装了Chrome、Firefox或Edge浏览器之一")
+
+    def crawl_steel_price(self, url):
         """
         爬取钢铁价格数据（修复StaleElement异常版）
+
+        Args:
+            url (str): 数据URL
         """
         from selenium.common.exceptions import StaleElementReferenceException
         logger.info(f"正在请求URL: {url}")
-        driver = webdriver.Chrome()
+        driver = self.get_webdriver()
         driver.get(url)
 
         try:
@@ -400,9 +470,15 @@ class MarketDataAnalyzer:
         finally:
             driver.quit()
 
-    def crawl_shibor_rate(self,url):
-        # Chrome选项设置
-        driver = webdriver.Chrome()
+    def crawl_shibor_rate(self, url):
+        """
+        爬取Shibor利率数据
+
+        Args:
+            url (str): 数据URL
+        """
+        # 获取WebDriver实例
+        driver = self.get_webdriver()
         driver.get(url)
         logger.info(f"正在请求URL: {url}")
 
@@ -452,8 +528,10 @@ class MarketDataAnalyzer:
                 driver.quit()
 
 if __name__ == "__main__":
+    # 初始化分析器
     analyzer = MarketDataAnalyzer()
-    # 只使用爬虫方式获取数据
+
+    print("更新所有数据...")
     # results = analyzer.update_excel('crawler')
     # analyzer.crawl_steel_price('https://index.mysteel.com/xpic/detail.html?tabName=kuangsi')
     analyzer.crawl_shibor_rate('https://www.shibor.org/shibor/index.html')
