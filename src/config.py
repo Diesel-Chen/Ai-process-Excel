@@ -3,7 +3,7 @@
 """
 
 # OpenAI配置
-OPENAI_API_KEY = "sk-8QVBnP6Ra75c683Ef960T3BLBkFJ86022933BC694aeFBbc9"  # 替换为您的API密钥
+OPENAI_API_KEY = "111"  # 替换为您的API密钥
 OPENAI_MODEL = "gpt-4"
 OPENAI_TEMPERATURE = 0.7
 
@@ -15,6 +15,7 @@ CURRENCY_PAIRS = {
     'HKD CNY': 'https://cn.investing.com/currencies/hkd-cny-historical-data',
     'CNY HKD': 'https://cn.investing.com/currencies/cny-hkd-historical-data',
     'JPY USD': 'https://cn.investing.com/currencies/jpy-usd-historical-data',
+    'USD 10Y': 'https://cn.investing.com/rates-bonds/u.s.-10-year-bond-yield-historical-data',
 }
 
 # 系统提示配置
@@ -36,5 +37,5 @@ ANALYSIS_PROMPT_TEMPLATE = """
 LOG_LEVEL = "INFO"
 
 # Excel配置
-EXCEL_OUTPUT_PATH = "market_index.xlsx"
+EXCEL_OUTPUT_PATH = "data/market_index.xlsx"
 
