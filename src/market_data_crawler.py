@@ -83,7 +83,7 @@ class MarketDataAnalyzer:
 
     def crawl_exchange_rate(self, url):
         """
-        使用爬虫直接获取市场数据
+        使用爬虫直接获取汇率数据
         """
         try:
             headers = {
@@ -149,7 +149,6 @@ class MarketDataAnalyzer:
         except Exception as e:
             logger.error(f"爬取过程出错: {str(e)}", exc_info=True)
             return None
-
 
     def update_excel(self, method='both'):
         """
@@ -401,11 +400,69 @@ class MarketDataAnalyzer:
             driver.quit()
 
 
+    def crawl_shibor_rate(self, url):
+        """
+        使用爬虫直接获取 Shibor 数据（改进版）
+        """
+        try:
+            headers = {
+                'User-Agent': self.ua.random,
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Referer': 'https://www.shibor.org/shibor/',
+                'Connection': 'keep-alive',
+                'DNT': '1',
+                'Pragma': 'no-cache',
+                'Cache-Control': 'no-cache',
+            }
+
+            time.sleep(random.uniform(1.5, 3.5))
+
+            logger.info(f"正在请求 URL: {url}")
+            response = requests.get(url, headers=headers, timeout=20)
+            response.encoding = 'utf-8'  # 强制设置编码
+
+            # 调试保存
+            with open("debug_page.html", "w", encoding="utf-8") as f:
+                f.write(response.text)
+
+            soup = BeautifulSoup(response.text, 'lxml')  # 使用更快的lxml解析器
+
+            # 更精准的定位方式
+            table = soup.select_one('table#shiborData')
+            if not table:
+                table = soup.find('table', {'id': 'shiborData'})
+
+            result = []
+            if table:
+                # 处理可能存在的tbody
+                tbody = table.find('tbody') or table
+                for tr in tbody.find_all('tr'):
+                    # 跳过空行（最后两个tr没有td）
+                    tds = tr.find_all('td', recursive=True)
+                    if len(tds) < 3:
+                        continue
+
+                    # 提取第三个td的文本
+                    value = tds[2].get_text(strip=True)
+                    if value.replace('.', '').isdigit():
+                        result.append(value)
+
+                logger.info(f"解析到 {len(result)} 条数据: {result}")
+                return result if result else None
+            else:
+                logger.warning("未找到shiborData表格")
+                return None
+
+        except Exception as e:
+            logger.error(f"爬取失败: {str(e)}", exc_info=True)
+            return None
 
 if __name__ == "__main__":
     analyzer = MarketDataAnalyzer()
     # 只使用爬虫方式获取数据
     # results = analyzer.update_excel('crawler')
-    analyzer.crawl_steel_price('https://index.mysteel.com/xpic/detail.html?tabName=kuangsi')
+    # analyzer.crawl_steel_price('https://index.mysteel.com/xpic/detail.html?tabName=kuangsi')
+    analyzer.crawl_shibor_rate('https://www.shibor.org/shibor/index.html')
 
     print("\n程序运行结束")
