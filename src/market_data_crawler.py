@@ -101,40 +101,42 @@ class MarketDataAnalyzer:
 
             soup = BeautifulSoup(response.text, 'html.parser')
 
-            # 更精准的选择器：通过类名定位第一行数据
-            first_row = soup.select_one('tr.historical-data-v2_price__atUfP')
-            if not first_row:
-                logger.error("未找到数据行，请检查HTML结构或反爬机制")
+         # 选择表格的前两行数据
+            rows = soup.select('tr.historical-data-v2_price__atUfP')[:2]
+
+            if len(rows) < 2:
+                logger.error("未找到足够的数据行，请检查HTML结构或反爬机制")
                 return None
 
-            # 提取数据
-            date = first_row.find('time').text.strip()
-            cells = first_row.find_all('td')
+            results = []
+            for row in rows:
+                date = row.find('time').text.strip()
+                cells = row.find_all('td')
 
-            if url == 'https://cn.investing.com/rates-bonds/u.s.-10-year-bond-yield-historical-data':
-                # 10年期美债数据
-                # 构造返回结果
-                result = {
-                    "日期": self.format_cn_date(date),
-                    "收盘": cells[1].text.strip(),
-                    "开盘": cells[2].text.strip(),
-                    "高": cells[3].text.strip(),
-                    "低": cells[4].text.strip(),
-                    "涨跌幅": cells[5].text.strip() if len(cells) > 5 else "N/A"
-                }
-            else:
-                # 构造返回结果
-                result = {
-                    "日期": self.format_cn_date(date),
-                    "收盘": cells[1].text.strip(),
-                    "开盘": cells[2].text.strip(),
-                    "高": cells[3].text.strip(),
-                    "低": cells[4].text.strip(),
-                    "涨跌幅": cells[6].text.strip() if len(cells) > 6 else "N/A"
-                }
+                if url == 'https://cn.investing.com/rates-bonds/u.s.-10-year-bond-yield-historical-data':
+                    # 10年期美债数据
+                    result = {
+                        "日期": self.format_cn_date(date),
+                        "收盘": cells[1].text.strip(),
+                        "开盘": cells[2].text.strip(),
+                        "高": cells[3].text.strip(),
+                        "低": cells[4].text.strip(),
+                        "涨跌幅": cells[5].text.strip() if len(cells) > 5 else "N/A"
+                    }
+                else:
+                    # 构造返回结果
+                    result = {
+                        "日期": self.format_cn_date(date),
+                        "收盘": cells[1].text.strip(),
+                        "开盘": cells[2].text.strip(),
+                        "高": cells[3].text.strip(),
+                        "低": cells[4].text.strip(),
+                        "涨跌幅": cells[6].text.strip() if len(cells) > 6 else "N/A"
+                    }
+                results.append(result)
 
-            logger.info(f"成功爬取数据: {result}")
-            return result
+            logger.info(f"成功爬取数据: {results}")
+            return results
 
         except requests.RequestException as e:
             logger.error(f"网络请求失败: {str(e)}")
@@ -148,16 +150,29 @@ class MarketDataAnalyzer:
         """
         更新现有Excel文件，追加数据到对应sheet的最后一行（检查日期是否重复）
         """
+        MAX_RETRIES = 3  # 最大重试次数
         try:
             results = {}
             for pair, url in config.CURRENCY_PAIRS.items():
                 print(f"\n正在分析 {pair} 的数据...")
                 data = {}
                 if method in ['crawler', 'both']:
-                    crawler_data = self.get_data_by_crawler(url)
-                    if crawler_data:
-                        data = crawler_data
-                        print(f"成功获取 {pair} 的爬虫数据")
+                    crawler_data = None
+                    retries = 0
+                    while retries < MAX_RETRIES:
+                        try:
+                            crawler_data = self.get_data_by_crawler(url)
+                            if crawler_data:
+                                data = crawler_data
+                                print(f"成功获取 {pair} 的爬虫数据")
+                                break
+                        except requests.RequestException as e:
+                            logger.warning(f"第 {retries + 1} 次请求 {url} 失败: {str(e)}，正在重试...")
+                            retries += 1
+                            time.sleep(2)  # 等待2秒后重试
+
+                    if not crawler_data:
+                        logger.error(f"多次尝试后仍无法获取 {pair} 的爬虫数据，跳过")
 
                 if method in ['openai', 'both']:
                     openai_data = self.get_data_by_openai(url)
@@ -178,80 +193,120 @@ class MarketDataAnalyzer:
                 ws = wb[sheet_name]
 
                 # 检查数据有效性
-                new_date_str = data.get("日期", "")
-                if not new_date_str:
+                if not data or len(data) < 2:
+                    logger.error(f"{sheet_name} 数据不足，跳过")
+                    continue
+
+                new_date_str1 = data[0].get("日期", "")
+                new_date_str2 = data[1].get("日期", "")
+                if not new_date_str1 or not new_date_str2:
                     logger.error(f"{sheet_name} 数据中缺少日期字段，跳过")
                     continue
 
                 # 解析新日期
                 try:
-                    year, month, day = map(int, new_date_str.split('/'))
-                    new_date = datetime(year, month, day)
+                    year1, month1, day1 = map(int, new_date_str1.split('/'))
+                    new_date1 = datetime(year1, month1, day1)
+                    year2, month2, day2 = map(int, new_date_str2.split('/'))
+                    new_date2 = datetime(year2, month2, day2)
                 except Exception as e:
-                    logger.error(f"解析新日期 '{new_date_str}' 失败: {str(e)}")
+                    logger.error(f"解析新日期 '{new_date_str1}' 或 '{new_date_str2}' 失败: {str(e)}")
                     continue
 
                 # 查找最后一行数据
                 last_row = self.find_last_row(ws)
-                date_exists = False
 
-                if last_row > 1:  # 存在数据行
-                    # 获取最后一行的日期值
-                    last_date_value = ws.cell(row=last_row, column=1).value
+                # 获取最后一行的日期值
+                last_date_value = ws.cell(row=last_row, column=1).value
 
-                    # 解析现有日期
-                    if isinstance(last_date_value, datetime):
-                        last_date = last_date_value
-                    else:
-                        try:
-                            if last_date_value:
-                                # 处理可能存在的字符串格式日期
-                                parts = list(map(int, str(last_date_value).split('/')))
-                                if len(parts) == 3:
-                                    last_date = datetime(*parts)
-                                else:
-                                    raise ValueError
-                        except Exception as e:
-                            logger.warning(f"解析现有日期 '{last_date_value}' 失败: {str(e)}")
-                            last_date = None
+                # 解析现有日期
+                if isinstance(last_date_value, datetime):
+                    last_date = last_date_value
+                else:
+                    try:
+                        if last_date_value:
+                            # 处理可能存在的字符串格式日期
+                            parts = list(map(int, str(last_date_value).split('/')))
+                            if len(parts) == 3:
+                                last_date = datetime(*parts)
+                            else:
+                                raise ValueError
+                    except Exception as e:
+                        logger.warning(f"解析现有日期 '{last_date_value}' 失败: {str(e)}")
+                        last_date = None
 
-                    # 比较日期
-                    if last_date and (new_date.date() == last_date.date()):
-                        logger.info(f"{sheet_name} 最新数据日期 {new_date_str} 已存在，跳过更新")
-                        date_exists = True
+                # 定义列顺序和行数据
+                if sheet_name == "USD 10Y":
+                    row_data1 = [
+                        data[0].get("日期", ""),
+                        data[0].get("收盘", ""),
+                        data[0].get("开盘", ""),
+                        data[0].get("高", ""),
+                        data[0].get("低", ""),
+                        data[0].get("涨跌幅", "")
+                    ]
+                    row_data2 = [
+                        data[1].get("日期", ""),
+                        data[1].get("收盘", ""),
+                        data[1].get("开盘", ""),
+                        data[1].get("高", ""),
+                        data[1].get("低", ""),
+                        data[1].get("涨跌幅", "")
+                    ]
+                else:
+                    row_data1 = [
+                        data[0].get("日期", ""),
+                        data[0].get("收盘", ""),
+                        data[0].get("开盘", ""),
+                        data[0].get("高", ""),
+                        data[0].get("低", ""),
+                        data[0].get("交易量", ""),
+                        data[0].get("涨跌幅", "")
+                    ]
+                    row_data2 = [
+                        data[1].get("日期", ""),
+                        data[1].get("收盘", ""),
+                        data[1].get("开盘", ""),
+                        data[1].get("高", ""),
+                        data[1].get("低", ""),
+                        data[1].get("交易量", ""),
+                        data[1].get("涨跌幅", "")
+                    ]
 
-                if not date_exists:
-                    # 定义列顺序和行数据
-                    if sheet_name == "USD 10Y":
-                        row_data = [
-                            data.get("日期", ""),
-                            data.get("收盘", ""),
-                            data.get("开盘", ""),
-                            data.get("高", ""),
-                            data.get("低", ""),
-                            data.get("涨跌幅", "")
-                        ]
-                    else:
-                        row_data = [
-                            data.get("日期", ""),
-                            data.get("收盘", ""),
-                            data.get("开盘", ""),
-                            data.get("高", ""),
-                            data.get("低", ""),
-                            data.get("交易量", ""),
-                            data.get("涨跌幅", "")
-                        ]
+                # 确定写入位置
+                target_row = last_row
 
-                    # 确定写入位置
-                    target_row = last_row + 1
-
-                    # 写入数据
-                    for col, value in enumerate(row_data, start=1):
+                # 比较日期并决定是否填充数据
+                if last_date and (new_date1.date() == last_date.date()):
+                    logger.info(f"{sheet_name} 最新数据日期 {new_date_str1} 已存在，跳过更新")
+                elif last_date and (new_date2.date() == last_date.date()):
+                    # 最后一行日期等于第二行数据日期，填充两行数据
+                    # 写入第二行数据
+                    for col, value in enumerate(row_data2, start=1):
                         ws.cell(row=target_row, column=col, value=value)
 
                     # 设置对齐格式
                     right_align = Alignment(horizontal='right')
-                    for col in range(1, len(row_data)+1):
+                    for col in range(1, len(row_data2)+1):
+                        ws.cell(row=target_row, column=col).alignment = right_align
+
+                    # 写入第一行数据
+                    target_row = last_row + 1
+                    for col, value in enumerate(row_data1, start=1):
+                        ws.cell(row=target_row, column=col, value=value)
+
+                    for col in range(1, len(row_data1)+1):
+                        ws.cell(row=target_row, column=col).alignment = right_align
+
+                    logger.info(f"已为 {sheet_name} 在第 {target_row - 1} 和 {target_row} 行追加新数据")
+                else:
+                    target_row = last_row + 1
+                    # 最后一行日期不等于第二行数据日期，只填充第一行数据
+                    for col, value in enumerate(row_data1, start=1):
+                        ws.cell(row=target_row, column=col, value=value)
+
+                    right_align = Alignment(horizontal='right')
+                    for col in range(1, len(row_data1)+1):
                         ws.cell(row=target_row, column=col).alignment = right_align
 
                     logger.info(f"已为 {sheet_name} 在第 {target_row} 行追加新数据")
