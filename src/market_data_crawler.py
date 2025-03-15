@@ -329,8 +329,55 @@ class MarketDataAnalyzer:
                 return row
         return 1  # 如果全为空，从第一行开始
 
+    def crawl_steel_url(self):
+        """
+        爬取钢铁价格数据
+        """
+        # 请求URL
+        url = 'https://index.mysteel.com/zs/newxpic/getReport.ms?typeName=%25E7%259F%25BF%25E7%259F%25B3%25E7%25BB%25BC%25E5%2590%2588&tabName=KUANGSHIZONGHE&dateType=day&startTime=&endTime=&returnType=&callback=json&v=1742044813486'
+
+        # 生成当前时间戳
+        timestamp = str(int(time.time() * 1000))
+
+        # 请求头
+        headers = {
+            'accept': '*/*',
+            'accept-encoding': 'gzip, deflate, br, zstd',
+            'accept-language': 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7',
+            'appkey': '47EE3F12CF0C443F8FD51EFDA73AC815',
+            'connection': 'keep-alive',
+            'cookie': 'buriedDistinctId=a82a0697b234487a829f0842abe6857c; uuid_5d36a9e0-919c-11e9-903c-ab24dbab411b=b7f3242f-11e3-4e68-afc2-568004f3d1f2; WM_NI=%2FqB4owX6QzNuqOmRY56IXT7%2FlCFAQer9lH0LwBhBqidbzQCLNtuCVDipLbaALCt6F0HoyhCZA4qvh1Mt7gSMxXzUbakbZz6mRs8vWXIGakzWPqZkelgKI%2Bry%2FenAr1l2Y2s%3D; WM_NIKE=9ca17ae2e6ffcda170e2e6eeb3f17e93b09bb1b43ef4eb8ba7d54e978f9ab1d642b8bca793c53cabaa9caae12af0fea7c3b92aedaf8ed5ee7d9cea9f9bcd7fb391a3b3dc3ff69798b5b625b09d8aa2d46fb2e7a4a9b348b59ea8a3f463a8beb6b2c2488eacbba4d550abb08483e44b909dbcd7c53c8cb1b789c25283ecbf97eb3b8facf988d247bc88b6b6e16ba9be969bb56792adf897d6548b99af8cf95d94af968ce868a59587ccf173edbba2a2f13bb0ee97d3f237e2a3; WM_TID=PkWDfO34CF1FEAUVFUbWd5Jn6V1nuHYP; href=https%3A%2F%2Findex.mysteel.com%2Fxpic%2Fdetail.html%3FtabName%3Dkuangsi; accessId=5d36a9e0-919c-11e9-903c-ab24dbab411b; Hm_lvt_1c4432afacfa2301369a5625795031b8=1741976396; HMACCOUNT=78E18EFE467443D4; qimo_xstKeywords_5d36a9e0-919c-11e9-903c-ab24dbab411b=; gdxidpyhxdE=xruAjcMxoXdpMKD9lp4bL1jfyZrglCAsK35%2FadlpW3i9fv2iMnZA5CT5bgjuqUhIEtqV4IPDLDyxc%2BJU1Py%5CjQn7h%2F%2BDux7lKbnq3%2FddLbKHpCowV8TsECcHuUuAmY932gQWYhOonjME9OYVI%5CJ7m%2FLteWjft5iPEcg8iOGBw54hq245%3A1742044941304; qimo_seosource_0=%E7%AB%99%E5%86%85; qimo_seokeywords_0=; qimo_seosource_5d36a9e0-919c-11e9-903c-ab24dbab411b=%E7%AB%99%E5%86%85; qimo_seokeywords_5d36a9e0-919c-11e9-903c-ab24dbab411b=; BURIED_STARTUP=eyJTVEFSVFVQIjp0cnVlLCJTVEFSVFVQVElNRSI6IjIwMjUtMDMtMTUgMjE6MTg6MDAuMzIxIn0%3D; pageViewNum=17; MYSTEEL_GLOBAL_BURIED_IDENTITY=ce68b00e4af388de91542dfdf8139bf7; Hm_lpvt_1c4432afacfa2301369a5625795031b8=1742044804; BURIED_COMMON_SPM=107.index_mysteel_com.main.0.0.1742044813467',
+            'host': 'index.mysteel.com',
+            'referer': 'https://index.mysteel.com/xpic/detail.html?tabName=kuangsi',
+            'sec-ch-ua': '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"macOS"',
+            'sec-fetch-dest': 'empty',
+            'sec-fetch-mode': 'cors',
+            'sec-fetch-site': 'same-origin',
+            'sign': 'BEBEA042BA896730CA4FC5F0590E4F89',
+            'timestamp': timestamp,
+            'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+            'version': '1.0.0',
+            'x-requested-with': 'XMLHttpRequest'
+        }
+
+        try:
+            # 发送请求
+            response = requests.get(url, headers=headers)
+            # 检查响应状态码
+            response.raise_for_status()
+            # 打印响应内容
+            print(response.json())
+        except requests.exceptions.HTTPError as http_err:
+            print(f'HTTP error occurred: {http_err}')
+        except Exception as err:
+            print(f'Other error occurred: {err}')
+
 if __name__ == "__main__":
     analyzer = MarketDataAnalyzer()
     # 只使用爬虫方式获取数据
-    results = analyzer.update_excel('crawler')
+    # results = analyzer.update_excel('crawler')
+    analyzer.crawl_steel_url()
+
     print("\n程序运行结束")
