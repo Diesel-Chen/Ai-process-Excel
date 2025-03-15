@@ -334,13 +334,13 @@ class MarketDataAnalyzer:
                 return row
         return 1  # 如果全为空，从第一行开始
 
-    def crawl_steel_price(self):
+    def crawl_steel_price(self,url):
         """
         爬取钢铁价格数据（修复StaleElement异常版）
         """
         from selenium.common.exceptions import StaleElementReferenceException
         driver = webdriver.Chrome()
-        driver.get("https://index.mysteel.com/xpic/detail.html?tabName=kuangsi")
+        driver.get(url)
 
         try:
             # 点击"相对价格指数走势图"
@@ -400,10 +400,12 @@ class MarketDataAnalyzer:
         finally:
             driver.quit()
 
+
+
 if __name__ == "__main__":
     analyzer = MarketDataAnalyzer()
     # 只使用爬虫方式获取数据
     # results = analyzer.update_excel('crawler')
-    # analyzer.crawl_steel_price()
+    analyzer.crawl_steel_price('https://index.mysteel.com/xpic/detail.html?tabName=kuangsi')
 
     print("\n程序运行结束")
