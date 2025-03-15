@@ -749,6 +749,412 @@ class MarketDataAnalyzer:
             if driver:
                 driver.quit()
 
+    def crawl_us_interest_rate(self,url):
+        """
+        爬取美国利率数据
+
+        Args:
+            url (str): 数据URL
+        """
+        driver = self.get_webdriver()
+        driver.get(url)
+        logger.info(f"正在请求URL: {url}")
+
+        try:
+            time.sleep(3)
+            # 定位第一个表格（两种方式任选其一）
+            # 方式1：通过CSS选择器列表索引
+            table = driver.find_element(By.CSS_SELECTOR, "table.table-model")
+            if not table:
+                logger.error("未找到目标表格")
+                return []
+
+            # 获取有效数据行（跳过表头）
+            rows = table.find_elements(By.CSS_SELECTOR, "tr:has(td)")
+
+            result_list = []
+
+            # 处理前两行数据
+            for row in rows[:2]:
+                cells = row.find_elements(By.TAG_NAME, "td")
+
+                # 验证数据完整性
+                if len(cells) != 4:
+                    logger.warning(f"异常行数据，跳过。实际列数：{len(cells)}")
+                    continue
+
+                # 创建格式化记录
+                record = {
+                    "日期": cells[0].text.strip(),
+                    "前值": cells[1].text.strip(),
+                    "现值": cells[2].text.strip(),
+                    "发布日期": cells[3].text.strip(),
+                }
+                result_list.append(record)
+
+            logger.info(f"成功抓取 {len(result_list)} 条记录")
+            print(f"DEBUG - 抓取结果: {result_list}")  # 调试输出
+            return result_list
+
+        except Exception as e:
+            logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
+            return []
+        finally:
+            if driver:
+                driver.quit()
+
+    def crawl_import_export(self,url):
+        """
+        爬取进出口贸易数据
+
+        Args:
+            url (str): 数据URL
+        """
+        driver = self.get_webdriver()
+        driver.get(url)
+        logger.info(f"正在请求URL: {url}")
+
+        try:
+            time.sleep(3)
+            # 定位第一个表格（两种方式任选其一）
+            # 方式1：通过CSS选择器列表索引
+            table = driver.find_element(By.CSS_SELECTOR, "table.table-model")
+            if not table:
+                logger.error("未找到目标表格")
+                return []
+
+            # 获取有效数据行（跳过表头）
+            rows = table.find_elements(By.CSS_SELECTOR, "tr:has(td)")
+
+            result_list = []
+
+            # 处理前两行数据
+            for row in rows[:2]:
+                cells = row.find_elements(By.TAG_NAME, "td")
+
+                # 验证数据完整性
+                if len(cells) != 11:
+                    logger.warning(f"异常行数据，跳过。实际列数：{len(cells)}")
+                    continue
+
+                # 创建格式化记录
+                record = {
+                    "月份": cells[0].text.strip(),
+                    "当月出口额金额": cells[1].text.strip(),
+                    "当月出口额同比增长": cells[2].text.strip(),
+                    "当月出口额环比增长": cells[3].text.strip(),
+                    "当月进口额金额": cells[4].text.strip(),
+                    "当月进口额同比增长": cells[5].text.strip(),
+                    "当月进口额环比增长": cells[6].text.strip(),
+                    "累计出口额金额": cells[7].text.strip(),
+                    "累计出口额同比增长": cells[8].text.strip(),
+                    "累计进口额金额": cells[9].text.strip(),
+                    "累计进口额同比增长": cells[10].text.strip(),
+                }
+                result_list.append(record)
+
+            logger.info(f"成功抓取 {len(result_list)} 条记录")
+            print(f"DEBUG - 抓取结果: {result_list}")  # 调试输出
+            return result_list
+
+        except Exception as e:
+            logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
+            return []
+        finally:
+            if driver:
+                driver.quit()
+
+    def crawl_money_supply(self,url):
+        """
+        爬取货币供应数据
+
+        Args:
+            url (str): 数据URL
+        """
+        driver = self.get_webdriver()
+        driver.get(url)
+        logger.info(f"正在请求URL: {url}")
+
+        try:
+            time.sleep(3)
+            # 定位第一个表格（两种方式任选其一）
+            # 方式1：通过CSS选择器列表索引
+            table = driver.find_element(By.CSS_SELECTOR, "table.table-model")
+            if not table:
+                logger.error("未找到目标表格")
+                return []
+
+            # 获取有效数据行（跳过表头）
+            rows = table.find_elements(By.CSS_SELECTOR, "tr:has(td)")
+
+            result_list = []
+
+            # 处理前两行数据
+            for row in rows[:2]:
+                cells = row.find_elements(By.TAG_NAME, "td")
+
+                # 验证数据完整性
+                if len(cells) != 10:
+                    logger.warning(f"异常行数据，跳过。实际列数：{len(cells)}")
+                    continue
+
+                # 创建格式化记录
+                record = {
+                    "月份": cells[0].text.strip(),
+                    "M2数量": cells[1].text.strip(),
+                    "M2同比增长": cells[2].text.strip(),
+                    "M2环比增长": cells[3].text.strip(),
+                    "M1数量": cells[4].text.strip(),
+                    "M1同比增长": cells[5].text.strip(),
+                    "M1环比增长": cells[6].text.strip(),
+                    "M0数量": cells[7].text.strip(),
+                    "M0同比增长": cells[8].text.strip(),
+                    "M0环比增长": cells[9].text.strip(),
+
+                }
+                result_list.append(record)
+
+            logger.info(f"成功抓取 {len(result_list)} 条记录")
+            print(f"DEBUG - 抓取结果: {result_list}")  # 调试输出
+            return result_list
+
+        except Exception as e:
+            logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
+            return []
+        finally:
+            if driver:
+                driver.quit()
+
+    def crawl_ppi(self,url):
+        """
+        爬取ppi数据
+
+        Args:
+            url (str): 数据URL
+        """
+        driver = self.get_webdriver()
+        driver.get(url)
+        logger.info(f"正在请求URL: {url}")
+
+        try:
+            time.sleep(3)
+            # 定位第一个表格（两种方式任选其一）
+            # 方式1：通过CSS选择器列表索引
+            table = driver.find_element(By.CSS_SELECTOR, "table.table-model")
+            if not table:
+                logger.error("未找到目标表格")
+                return []
+
+            # 获取有效数据行（跳过表头）
+            rows = table.find_elements(By.CSS_SELECTOR, "tr:has(td)")
+
+            result_list = []
+
+            # 处理前两行数据
+            for row in rows[:2]:
+                cells = row.find_elements(By.TAG_NAME, "td")
+
+                # 验证数据完整性
+                if len(cells) != 4:
+                    logger.warning(f"异常行数据，跳过。实际列数：{len(cells)}")
+                    continue
+
+                # 创建格式化记录
+                record = {
+                    "月份": cells[0].text.strip(),
+                    "当月": cells[1].text.strip(),
+                    "当月同比增长": cells[2].text.strip(),
+                    "累计": cells[3].text.strip(),
+
+                }
+                result_list.append(record)
+
+            logger.info(f"成功抓取 {len(result_list)} 条记录")
+            print(f"DEBUG - 抓取结果: {result_list}")  # 调试输出
+            return result_list
+
+        except Exception as e:
+            logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
+            return []
+        finally:
+            if driver:
+                driver.quit()
+
+    def crawl_cpi(self,url):
+        """
+        爬取cpi数据
+
+        Args:
+            url (str): 数据URL
+        """
+        driver = self.get_webdriver()
+        driver.get(url)
+        logger.info(f"正在请求URL: {url}")
+
+        try:
+            time.sleep(3)
+            # 定位第一个表格（两种方式任选其一）
+            # 方式1：通过CSS选择器列表索引
+            table = driver.find_element(By.CSS_SELECTOR, "table.table-model")
+            if not table:
+                logger.error("未找到目标表格")
+                return []
+
+            # 获取有效数据行（跳过表头）
+            rows = table.find_elements(By.CSS_SELECTOR, "tr:has(td)")
+
+            result_list = []
+
+            # 处理前两行数据
+            for row in rows[:2]:
+                cells = row.find_elements(By.TAG_NAME, "td")
+
+                # 验证数据完整性
+                if len(cells) != 13:
+                    logger.warning(f"异常行数据，跳过。实际列数：{len(cells)}")
+                    continue
+
+                # 创建格式化记录
+                record = {
+                    "月份": cells[0].text.strip(),
+                    "全国当月": cells[1].text.strip(),
+                    "全国同比增长": cells[2].text.strip(),
+                    "全国环比增长": cells[3].text.strip(),
+                    "全国累计": cells[4].text.strip(),
+                    "城市当月": cells[5].text.strip(),
+                    "城市同比增长": cells[6].text.strip(),
+                    "城市环比增长": cells[7].text.strip(),
+                    "城市累计": cells[8].text.strip(),
+                    "农村当月": cells[9].text.strip(),
+                    "农村同比增长": cells[10].text.strip(),
+                    "农村环比增长": cells[11].text.strip(),
+                    "农村累计": cells[12].text.strip(),
+                }
+                result_list.append(record)
+
+            logger.info(f"成功抓取 {len(result_list)} 条记录")
+            print(f"DEBUG - 抓取结果: {result_list}")  # 调试输出
+            return result_list
+
+        except Exception as e:
+            logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
+            return []
+        finally:
+            if driver:
+                driver.quit()
+
+    def crawl_pmi(self,url):
+        """
+        爬取pmi数据
+
+        Args:
+            url (str): 数据URL
+        """
+        driver = self.get_webdriver()
+        driver.get(url)
+        logger.info(f"正在请求URL: {url}")
+
+        try:
+            time.sleep(3)
+            # 定位第一个表格（两种方式任选其一）
+            # 方式1：通过CSS选择器列表索引
+            table = driver.find_element(By.CSS_SELECTOR, "table.table-model")
+            if not table:
+                logger.error("未找到目标表格")
+                return []
+
+            # 获取有效数据行（跳过表头）
+            rows = table.find_elements(By.CSS_SELECTOR, "tr:has(td)")
+
+            result_list = []
+
+            # 处理前两行数据
+            for row in rows[:2]:
+                cells = row.find_elements(By.TAG_NAME, "td")
+
+                # 验证数据完整性
+                if len(cells) != 5:
+                    logger.warning(f"异常行数据，跳过。实际列数：{len(cells)}")
+                    continue
+
+                # 创建格式化记录
+                record = {
+                    "月份": cells[0].text.strip(),
+                    "制造业指数": cells[1].text.strip(),
+                    "制造业同比增长": cells[2].text.strip(),
+                    "非制造业指数": cells[3].text.strip(),
+                    "非制造业同比增长": cells[4].text.strip(),
+                }
+                result_list.append(record)
+
+            logger.info(f"成功抓取 {len(result_list)} 条记录")
+            print(f"DEBUG - 抓取结果: {result_list}")  # 调试输出
+            return result_list
+
+        except Exception as e:
+            logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
+            return []
+        finally:
+            if driver:
+                driver.quit()
+
+    def crawl_new_bank_loan_addition(self,url):
+        """
+        爬取 中国 新增信贷数据
+
+        Args:
+            url (str): 数据URL
+        """
+        driver = self.get_webdriver()
+        driver.get(url)
+        logger.info(f"正在请求URL: {url}")
+
+        try:
+            time.sleep(3)
+            # 定位第一个表格（两种方式任选其一）
+            # 方式1：通过CSS选择器列表索引
+            table = driver.find_element(By.CSS_SELECTOR, "table.table-model")
+            if not table:
+                logger.error("未找到目标表格")
+                return []
+
+            # 获取有效数据行（跳过表头）
+            rows = table.find_elements(By.CSS_SELECTOR, "tr:has(td)")
+
+            result_list = []
+
+            # 处理前两行数据
+            for row in rows[:2]:
+                cells = row.find_elements(By.TAG_NAME, "td")
+
+                # 验证数据完整性
+                if len(cells) != 6:
+                    logger.warning(f"异常行数据，跳过。实际列数：{len(cells)}")
+                    continue
+
+                # 创建格式化记录
+                record = {
+                    "月份": cells[0].text.strip(),
+                    "当月": cells[1].text.strip(),
+                    "同比增长": cells[2].text.strip(),
+                    "环比增长": cells[3].text.strip(),
+                    "累计": cells[4].text.strip(),
+                    "同比增长": cells[5].text.strip(),
+                }
+                result_list.append(record)
+
+            logger.info(f"成功抓取 {len(result_list)} 条记录")
+            print(f"DEBUG - 抓取结果: {result_list}")  # 调试输出
+            return result_list
+
+        except Exception as e:
+            logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
+            return []
+        finally:
+            if driver:
+                driver.quit()
+
+
 
 if __name__ == "__main__":
     # 初始化分析器
@@ -761,7 +1167,21 @@ if __name__ == "__main__":
     # analyzer.crawl_lpr('https://www.shibor.org/shibor/index.html')
     # analyzer.crawl_sofr('https://www.newyorkfed.org/markets/reference-rates/sofr')
     # analyzer.crawl_ester('https://www.euribor-rates.eu/en/ester/')
-    analyzer.crawl_jpy_rate('https://www.global-rates.com/en/interest-rates/central-banks/9/japanese-boj-overnight-call-rate/')
+    # analyzer.crawl_jpy_rate('https://www.global-rates.com/en/interest-rates/central-banks/9/japanese-boj-overnight-call-rate/')
+    # analyzer.crawl_us_interest_rate('https://data.eastmoney.com/cjsj/foreign_0_22.html')
+    # analyzer.crawl_import_export('https://data.eastmoney.com/cjsj/hgjck.html')
+    # analyzer.crawl_money_supply('https://data.eastmoney.com/cjsj/hbgyl.html')
+    # analyzer.crawl_ppi('https://data.eastmoney.com/cjsj/ppi.html')
+    # analyzer.crawl_cpi('https://data.eastmoney.com/cjsj/cpi.html')
+    # analyzer.crawl_pmi('https://data.eastmoney.com/cjsj/pmi.html')
+    analyzer.crawl_new_bank_loan_addition('https://data.eastmoney.com/cjsj/xzxd.html')
+
+
+
+
+
+
+
 
 
 
