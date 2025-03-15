@@ -14,6 +14,11 @@ from openpyxl.styles import Alignment
 import platform
 from datetime import datetime
 
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+
 
 # 设置日志
 logging.basicConfig(level=getattr(logging, config.LOG_LEVEL))
@@ -76,7 +81,7 @@ class MarketDataAnalyzer:
             logger.error(f"OpenAI分析过程中出错: {str(e)}")
             return None
 
-    def get_data_by_crawler(self, url):
+    def crawl_exchange_rate(self, url):
         """
         使用爬虫直接获取市场数据
         """
@@ -161,7 +166,7 @@ class MarketDataAnalyzer:
                     retries = 0
                     while retries < MAX_RETRIES:
                         try:
-                            crawler_data = self.get_data_by_crawler(url)
+                            crawler_data = self.crawl_exchange_rate(url)
                             if crawler_data:
                                 data = crawler_data
                                 print(f"成功获取 {pair} 的爬虫数据")
@@ -329,55 +334,76 @@ class MarketDataAnalyzer:
                 return row
         return 1  # 如果全为空，从第一行开始
 
-    def crawl_steel_url(self):
+    def crawl_steel_price(self):
         """
-        爬取钢铁价格数据
+        爬取钢铁价格数据（修复StaleElement异常版）
         """
-        # 请求URL
-        url = 'https://index.mysteel.com/zs/newxpic/getReport.ms?typeName=%25E7%259F%25BF%25E7%259F%25B3%25E7%25BB%25BC%25E5%2590%2588&tabName=KUANGSHIZONGHE&dateType=day&startTime=&endTime=&returnType=&callback=json&v=1742044813486'
-
-        # 生成当前时间戳
-        timestamp = str(int(time.time() * 1000))
-
-        # 请求头
-        headers = {
-            'accept': '*/*',
-            'accept-encoding': 'gzip, deflate, br, zstd',
-            'accept-language': 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7',
-            'appkey': '47EE3F12CF0C443F8FD51EFDA73AC815',
-            'connection': 'keep-alive',
-            'cookie': 'buriedDistinctId=a82a0697b234487a829f0842abe6857c; uuid_5d36a9e0-919c-11e9-903c-ab24dbab411b=b7f3242f-11e3-4e68-afc2-568004f3d1f2; WM_NI=%2FqB4owX6QzNuqOmRY56IXT7%2FlCFAQer9lH0LwBhBqidbzQCLNtuCVDipLbaALCt6F0HoyhCZA4qvh1Mt7gSMxXzUbakbZz6mRs8vWXIGakzWPqZkelgKI%2Bry%2FenAr1l2Y2s%3D; WM_NIKE=9ca17ae2e6ffcda170e2e6eeb3f17e93b09bb1b43ef4eb8ba7d54e978f9ab1d642b8bca793c53cabaa9caae12af0fea7c3b92aedaf8ed5ee7d9cea9f9bcd7fb391a3b3dc3ff69798b5b625b09d8aa2d46fb2e7a4a9b348b59ea8a3f463a8beb6b2c2488eacbba4d550abb08483e44b909dbcd7c53c8cb1b789c25283ecbf97eb3b8facf988d247bc88b6b6e16ba9be969bb56792adf897d6548b99af8cf95d94af968ce868a59587ccf173edbba2a2f13bb0ee97d3f237e2a3; WM_TID=PkWDfO34CF1FEAUVFUbWd5Jn6V1nuHYP; href=https%3A%2F%2Findex.mysteel.com%2Fxpic%2Fdetail.html%3FtabName%3Dkuangsi; accessId=5d36a9e0-919c-11e9-903c-ab24dbab411b; Hm_lvt_1c4432afacfa2301369a5625795031b8=1741976396; HMACCOUNT=78E18EFE467443D4; qimo_xstKeywords_5d36a9e0-919c-11e9-903c-ab24dbab411b=; gdxidpyhxdE=xruAjcMxoXdpMKD9lp4bL1jfyZrglCAsK35%2FadlpW3i9fv2iMnZA5CT5bgjuqUhIEtqV4IPDLDyxc%2BJU1Py%5CjQn7h%2F%2BDux7lKbnq3%2FddLbKHpCowV8TsECcHuUuAmY932gQWYhOonjME9OYVI%5CJ7m%2FLteWjft5iPEcg8iOGBw54hq245%3A1742044941304; qimo_seosource_0=%E7%AB%99%E5%86%85; qimo_seokeywords_0=; qimo_seosource_5d36a9e0-919c-11e9-903c-ab24dbab411b=%E7%AB%99%E5%86%85; qimo_seokeywords_5d36a9e0-919c-11e9-903c-ab24dbab411b=; BURIED_STARTUP=eyJTVEFSVFVQIjp0cnVlLCJTVEFSVFVQVElNRSI6IjIwMjUtMDMtMTUgMjE6MTg6MDAuMzIxIn0%3D; pageViewNum=17; MYSTEEL_GLOBAL_BURIED_IDENTITY=ce68b00e4af388de91542dfdf8139bf7; Hm_lpvt_1c4432afacfa2301369a5625795031b8=1742044804; BURIED_COMMON_SPM=107.index_mysteel_com.main.0.0.1742044813467',
-            'host': 'index.mysteel.com',
-            'referer': 'https://index.mysteel.com/xpic/detail.html?tabName=kuangsi',
-            'sec-ch-ua': '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
-            'sec-ch-ua-mobile': '?0',
-            'sec-ch-ua-platform': '"macOS"',
-            'sec-fetch-dest': 'empty',
-            'sec-fetch-mode': 'cors',
-            'sec-fetch-site': 'same-origin',
-            'sign': 'BEBEA042BA896730CA4FC5F0590E4F89',
-            'timestamp': timestamp,
-            'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
-            'version': '1.0.0',
-            'x-requested-with': 'XMLHttpRequest'
-        }
+        from selenium.common.exceptions import StaleElementReferenceException
+        driver = webdriver.Chrome()
+        driver.get("https://index.mysteel.com/xpic/detail.html?tabName=kuangsi")
 
         try:
-            # 发送请求
-            response = requests.get(url, headers=headers)
-            # 检查响应状态码
-            response.raise_for_status()
-            # 打印响应内容
-            print(response.json())
-        except requests.exceptions.HTTPError as http_err:
-            print(f'HTTP error occurred: {http_err}')
-        except Exception as err:
-            print(f'Other error occurred: {err}')
+            # 点击"相对价格指数走势图"
+            WebDriverWait(driver, 15).until(
+                EC.element_to_be_clickable((By.XPATH, '//span[text()="相对价格指数走势图"]'))
+            ).click()
+
+            # 等待数据完全加载（关键修复点）
+            WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.XPATH, '//td[contains(text(),"/") and string-length(text())>8]'))  # 匹配日期格式数据
+            )
+
+            # 获取表格引用（每次重新获取元素）
+            table = driver.find_element(By.XPATH, '//table[contains(@class,"detailTab")]')
+
+            # 单次获取所有需要的数据（避免重复查询DOM）
+            rows = table.find_elements(By.XPATH, './/tbody/tr[position()<=2]')
+            data = []
+
+            for row in rows:
+                try:
+                    # 实时获取当前行元素（防止状态过期）
+                    cells = row.find_elements(By.XPATH, './/td[not(contains(@style,"none"))]')
+
+                    # 过滤无效行（关键修复点）
+                    if len(cells) < 10:  # 根据调试结果调整阈值
+                        print(f"跳过无效行，列数：{len(cells)}")
+                        continue
+
+                    # 立即提取文本内容（防止元素失效）
+                    cell_texts = [cell.text for cell in cells]
+
+                    # 动态映射字段（根据实际列顺序调整）
+                    item = {
+                        "时间": cell_texts[0],
+                        "本日": cell_texts[1],
+                        "昨日": cell_texts[2],
+                        "日环比": cell_texts[3].strip("%"),
+                        "上周": cell_texts[4],
+                        "周环比": cell_texts[5].strip("%"),
+                        "上月度": cell_texts[6],
+                        "与上月比": cell_texts[7].strip("%"),
+                        "去年同期": cell_texts[8],
+                        "与去年比": cell_texts[9].strip("%")
+                    }
+                    data.append(item)
+
+                except StaleElementReferenceException:
+                    print("检测到元素过期，重新获取表格数据...")
+                    table = driver.find_element(By.XPATH, '//table[contains(@class,"detailTab")]')
+                    rows = table.find_elements(By.XPATH, './/tbody/tr[position()<=2]')
+                    continue
+
+            print("最终有效数据:", data)
+            return data
+
+        finally:
+            driver.quit()
 
 if __name__ == "__main__":
     analyzer = MarketDataAnalyzer()
     # 只使用爬虫方式获取数据
     # results = analyzer.update_excel('crawler')
-    analyzer.crawl_steel_url()
+    # analyzer.crawl_steel_price()
 
     print("\n程序运行结束")
