@@ -157,7 +157,6 @@ class MarketDataAnalyzer:
         else:  # Linux/macOS
             return dt.strftime("%Y/%-m/%d")
 
-    # todo 等待时间好久 不知为啥
     def format_jpy_rate_date(self, raw_date):
         # 解析中文月份
         dt = datetime.strptime(raw_date, "%m-%d-%Y")
@@ -168,6 +167,15 @@ class MarketDataAnalyzer:
         else:  # Linux/macOS
             return dt.strftime("%Y/%-m/%d")
 
+    def format_lpr_date(self, raw_date):
+        # 解析中文月份
+        dt = datetime.strptime(raw_date, "%Y-%m-%d")
+
+        # 判断操作系统
+        if platform.system() == "Windows":
+            return dt.strftime("%Y/%#m/%d")
+        else:  # Linux/macOS
+            return dt.strftime("%Y/%-m/%d")
 
     def get_data_by_openai(self, url):
         """
@@ -679,38 +687,37 @@ class MarketDataAnalyzer:
         try:
             time.sleep(3)  # 等待页面加载
             # 新式定位方法（Selenium 4.x+语法）
-            table = driver.find_element(By.ID, 'lpr-table')
+            table = driver.find_element(By.ID, 'lpr-ten-days-table')
 
             # 提取关键数据
-            date_str = driver.find_element(By.ID, "home-lpr-date")\
-                        .text.strip()\
-                        .replace("\xa0", " ")
+            rows = table.find_elements(By.CSS_SELECTOR, "tr")
+            # 跳过表头行
+            data_rows = rows[3:]
 
             # 初始化结果数组
             result_list = []
 
-            # 处理数据表格
-            current_record = {"日期": date_str}
-
-            for row in table.find_elements(By.CSS_SELECTOR, "tr:has(td)"):  # 只处理有td的行
+            row_index = 0
+            for row in data_rows:
+                if row_index > 2:
+                    break
                 cells = row.find_elements(By.TAG_NAME, "td")
                 if len(cells) < 3:
                     continue
 
-                term = cells[1].text.strip()
-                rate = cells[2].text.strip()
+                date = self.format_lpr_date(cells[0].text.strip())
+                term_1y = cells[1].text.strip()
+                term_5y = cells[2].text.strip()
 
-                # 只收集目标期限类型
-                if term in ['1Y', '5Y']:
-                    current_record[term] = rate
-
-            # 验证数据完整性后添加到数组
-            if len(current_record) >= 3:  # 日期+2个期限
+                current_record = {
+                    "日期": date,
+                    "1Y": term_1y,
+                    "5Y": term_5y,
+                    "PBOC_(6M-1Y)":4.35,
+                    "rowPBOC_(>5Y)":4.9
+                }
                 result_list.append(current_record)
-                # 为了满足两行数据的要求，复制一份
-                result_list.append(current_record.copy())
-            else:
-                print("数据不完整，已丢弃当前记录")
+                row_index+=1
 
             logger.info(f"成功抓取 LPR 数据: {result_list}")
             return result_list
@@ -824,6 +831,7 @@ class MarketDataAnalyzer:
             logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
             return None
 
+    # todo 等待时间好久 不知为啥
     def crawl_jpy_rate(self, url):
         """
         爬取页面jpy_rate数据
