@@ -26,69 +26,79 @@ from webdriver_manager.firefox import GeckoDriverManager
 from webdriver_manager.microsoft import EdgeChromiumDriverManager
 from selenium.common.exceptions import StaleElementReferenceException
 
+import time
 
 # 设置日志
 logging.basicConfig(level=getattr(logging, config.LOG_LEVEL))
 logger = logging.getLogger(__name__)
+
+def log_execution_time(func):
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        logger.info(f"{func.__name__} 执行时间: {elapsed_time:.2f} 秒")
+        return result
+    return wrapper
 
 class MarketDataAnalyzer:
     _driver = None
 
     def __init__(self):
         print("初始化市场数据分析器...")
-        # 初始化OpenAI客户端
-        self.client = OpenAI(
-            api_key=config.OPENAI_API_KEY
-        )
         # 初始化User-Agent生成器
         self.ua = UserAgent()
 
     @classmethod
     def get_driver(cls):
-        """
-        获取WebDriver单例实例
-        """
         if cls._driver is None:
-            try:
-                # 首先尝试Chrome
-                options = Options()
-                options.add_argument('--headless')
-                options.add_argument('--no-sandbox')
-                options.add_argument('--disable-dev-shm-usage')
-                options.add_argument('--disable-gpu')
-                options.add_argument(f'user-agent={UserAgent().random}')
+            browsers = [
+                {
+                    'name': 'Chrome',
+                    'options': webdriver.ChromeOptions(),
+                    'service': Service(ChromeDriverManager().install()),
+                    'driver': webdriver.Chrome
+                },
+                {
+                    'name': 'Firefox',
+                    'options': webdriver.FirefoxOptions(),
+                    'service': Service(GeckoDriverManager().install()),
+                    'driver': webdriver.Firefox
+                },
+                {
+                    'name': 'Edge',
+                    'options': webdriver.EdgeOptions(),
+                    'service': Service(EdgeChromiumDriverManager().install()),
+                    'driver': webdriver.Edge
+                }
+            ]
 
-                # 使用webdriver_manager自动下载和管理驱动
-                service = Service(ChromeDriverManager().install())
-                cls._driver = webdriver.Chrome(service=service, options=options)
-                logger.info("成功初始化Chrome WebDriver")
-            except Exception as e:
-                logger.warning(f"Chrome WebDriver初始化失败: {str(e)}")
-
+            for browser in browsers:
                 try:
-                    # 尝试Firefox
-                    from selenium.webdriver.firefox.options import Options as FirefoxOptions
-                    options = FirefoxOptions()
-                    options.add_argument('--headless')
+                    # 设置通用选项
+                    browser['options'].add_argument('--headless')
+                    browser['options'].add_argument('--disable-gpu')
+                    browser['options'].add_argument(f'user-agent={UserAgent().random}')
 
-                    service = Service(GeckoDriverManager().install())
-                    cls._driver = webdriver.Firefox(service=service, options=options)
-                    logger.info("成功初始化Firefox WebDriver")
+                    # 修复驱动路径问题（关键！）
+                    if browser['name'] == 'Chrome':
+                        # 显式指定驱动路径（避免使用缓存中的错误文件）
+                        driver_path = ChromeDriverManager().install()
+                        service = Service(executable_path=driver_path)
+                        cls._driver = webdriver.Chrome(service=service, options=browser['options'])
+                    else:
+                        # 其他浏览器同理
+                        service = browser['service']
+                        cls._driver = browser['driver'](service=service, options=browser['options'])
+
+                    logger.info(f"成功初始化 {browser['name']} WebDriver")
+                    return cls._driver
                 except Exception as e:
-                    logger.warning(f"Firefox WebDriver初始化失败: {str(e)}")
+                    logger.warning(f"{browser['name']} WebDriver 初始化失败: {str(e)}")
+                    continue
 
-                    try:
-                        # 最后尝试Edge
-                        from selenium.webdriver.edge.options import Options as EdgeOptions
-                        options = EdgeOptions()
-                        options.add_argument('--headless')
-
-                        service = Service(EdgeChromiumDriverManager().install())
-                        cls._driver = webdriver.Edge(service=service, options=options)
-                        logger.info("成功初始化Edge WebDriver")
-                    except Exception as e:
-                        logger.error(f"所有WebDriver初始化都失败: {str(e)}")
-                        raise Exception("无法初始化任何WebDriver，请确保至少安装了Chrome、Firefox或Edge浏览器之一")
+            raise Exception("所有浏览器驱动初始化失败！")
         return cls._driver
 
     def close_driver(self):
@@ -187,43 +197,7 @@ class MarketDataAnalyzer:
         else:  # Linux/macOS
             return dt.strftime("%Y/%-m/%d")
 
-    def get_data_by_openai(self, url):
-        """
-        使用OpenAI分析市场数据URL并返回结构化数据
-
-        Args:
-            url (str): 需要分析的URL
-
-        Returns:
-            dict: 包含分析结果的字典
-        """
-        try:
-            # 使用配置文件中的提示模板
-            prompt = config.ANALYSIS_PROMPT_TEMPLATE.format(url=url)
-
-            # 调用OpenAI API
-            response = self.client.chat.completions.create(
-                model=config.OPENAI_MODEL,
-                messages=[
-                    {"role": "system", "content": config.SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=config.OPENAI_TEMPERATURE
-            )
-
-            # 获取分析结果
-            analysis = response.choices[0].message.content
-            logger.info("OpenAI分析完成")
-
-            return {
-                'source': 'openai',
-                'timestamp': datetime.now().isoformat(),
-                'analysis': analysis
-            }
-        except Exception as e:
-            logger.error(f"OpenAI分析过程中出错: {str(e)}")
-            return None
-
+    @log_execution_time
     def crawl_exchange_rate(self, url):
         """
         使用爬虫直接获取汇率数据
@@ -388,6 +362,9 @@ class MarketDataAnalyzer:
                     if sheet_name == 'SOFR':
                         month, day, year = map(int, str(last_date_value).split('/'))
                         last_date = datetime(year, month, day)
+                    elif sheet_name == 'Shibor':
+                        year, month, day = map(int, str(last_date_value).split('-'))
+                        last_date = datetime(year, month, day)
                     else:
                         year, month, day = map(int, str(last_date_value).split('/'))
                         last_date = datetime(year, month, day)
@@ -464,7 +441,7 @@ class MarketDataAnalyzer:
             else:
                 cell.alignment = Alignment(horizontal='right')
 
-    def update_excel(self, method='both'):
+    def update_excel(self):
         """
         更新现有Excel文件，追加数据到对应sheet的最后一行（检查日期是否重复）
 
@@ -476,34 +453,27 @@ class MarketDataAnalyzer:
             results = {}
 
             # 处理汇率数据（原有逻辑）
-            for pair, url in config.CURRENCY_PAIRS.items():
-                print(f"\n正在分析 {pair} 的数据...")
-                data = {}
-                if method in ['crawler', 'both']:
-                    crawler_data = None
-                    retries = 0
-                    while retries < MAX_RETRIES:
-                        try:
-                            crawler_data = self.crawl_exchange_rate(url)
-                            if crawler_data:
-                                data = crawler_data
-                                print(f"成功获取 {pair} 的爬虫数据")
-                                break
-                        except requests.RequestException as e:
-                            logger.warning(f"第 {retries + 1} 次请求 {url} 失败: {str(e)}，正在重试...")
-                            retries += 1
-                            time.sleep(2)  # 等待2秒后重试
+            # for pair, url in config.CURRENCY_PAIRS.items():
+            #     print(f"\n正在分析 {pair} 的数据...")
+            #     data = {}
+            #     crawler_data = None
+            #     retries = 0
+            #     while retries < MAX_RETRIES:
+            #         try:
+            #             crawler_data = self.crawl_exchange_rate(url)
+            #             if crawler_data:
+            #                 data = crawler_data
+            #                 print(f"成功获取 {pair} 的爬虫数据")
+            #                 break
+            #         except requests.RequestException as e:
+            #             logger.warning(f"第 {retries + 1} 次请求 {url} 失败: {str(e)}，正在重试...")
+            #             retries += 1
+            #             time.sleep(2)  # 等待2秒后重试
 
-                    if not crawler_data:
-                        logger.error(f"多次尝试后仍无法获取 {pair} 的爬虫数据，跳过")
+            #     if not crawler_data:
+            #         logger.error(f"多次尝试后仍无法获取 {pair} 的爬虫数据，跳过")
 
-                if method in ['openai', 'both']:
-                    openai_data = self.get_data_by_openai(url)
-                    if openai_data:
-                        data['openai_analysis'] = openai_data['analysis']
-                        print(f"成功获取 {pair} 的OpenAI分析数据")
-
-                results[pair] = data
+            #     results[pair] = data
 
             # 处理日频数据
             for sheet_name, info in config.DAILY_DATA_PAIRS.items():
@@ -515,17 +485,17 @@ class MarketDataAnalyzer:
                     print(f"成功获取日频数据 {sheet_name}")
 
             # 处理月度数据
-            for sheet_name, info in config.MONTHLY_DATA_PAIRS.items():
-                print(f"\n正在分析月度数据 {sheet_name}...")
-                crawler_method = getattr(self, info['crawler'])
-                data = crawler_method(info['url'])
-                if data:
-                    # 只保留第一行数据
-                    if isinstance(data, list) and len(data) > 0:
-                        results[sheet_name] = data[0]
-                    else:
-                        results[sheet_name] = data
-                    print(f"成功获取月度数据 {sheet_name}")
+            # for sheet_name, info in config.MONTHLY_DATA_PAIRS.items():
+            #     print(f"\n正在分析月度数据 {sheet_name}...")
+            #     crawler_method = getattr(self, info['crawler'])
+            #     data = crawler_method(info['url'])
+            #     if data:
+            #         # 只保留第一行数据
+            #         if isinstance(data, list) and len(data) > 0:
+            #             results[sheet_name] = data[0]
+            #         else:
+            #             results[sheet_name] = data
+            #         print(f"成功获取月度数据 {sheet_name}")
 
             # 加载现有Excel文件
             wb = load_workbook(config.EXCEL_OUTPUT_PATH)
@@ -577,6 +547,7 @@ class MarketDataAnalyzer:
         finally:
             self.close_driver()
 
+    @log_execution_time
     def crawl_steel_price(self, url):
         """
         爬取钢铁价格数据（修复StaleElement异常版）
@@ -648,6 +619,7 @@ class MarketDataAnalyzer:
             logger.error(f"爬取钢铁价格数据失败: {str(e)}", exc_info=True)
             return None
 
+    @log_execution_time
     def crawl_shibor_rate(self, url):
         """
         爬取Shibor利率数据
@@ -695,6 +667,7 @@ class MarketDataAnalyzer:
             logger.error(f"数据抓取失败: {str(e)}")
             return None
 
+    @log_execution_time
     def crawl_lpr(self, url):
         """
         爬取LPR数据
@@ -748,6 +721,7 @@ class MarketDataAnalyzer:
             logger.error(f"数据抓取失败: {str(e)}")
             return None
 
+    @log_execution_time
     def crawl_sofr(self, url):
         """
         爬取SOFR数据并按指定顺序返回前两行数据
@@ -801,6 +775,7 @@ class MarketDataAnalyzer:
             logger.error(f"数据抓取失败: {str(e)}", exc_info=True)
             return None
 
+    @log_execution_time
     def crawl_ester(self, url):
         """
         爬取页面中第一个ESTER表格数据
@@ -854,6 +829,7 @@ class MarketDataAnalyzer:
             return None
 
     # todo 等待时间好久 不知为啥
+    @log_execution_time
     def crawl_jpy_rate(self, url):
         """
         爬取页面jpy_rate数据
@@ -903,6 +879,7 @@ class MarketDataAnalyzer:
             logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
             return None
 
+    @log_execution_time
     def crawl_us_interest_rate(self, url):
         """
         爬取美国利率数据
@@ -953,6 +930,7 @@ class MarketDataAnalyzer:
             logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
             return None
 
+    @log_execution_time
     def crawl_import_export(self, url):
         """
         爬取进出口贸易数据
@@ -1010,6 +988,7 @@ class MarketDataAnalyzer:
             logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
             return None
 
+    @log_execution_time
     def crawl_money_supply(self, url):
         """
         爬取货币供应数据
@@ -1066,6 +1045,7 @@ class MarketDataAnalyzer:
             logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
             return None
 
+    @log_execution_time
     def crawl_ppi(self, url):
         """
         爬取ppi数据
@@ -1116,6 +1096,7 @@ class MarketDataAnalyzer:
             logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
             return None
 
+    @log_execution_time
     def crawl_cpi(self, url):
         """
         爬取cpi数据
@@ -1175,6 +1156,7 @@ class MarketDataAnalyzer:
             logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
             return None
 
+    @log_execution_time
     def crawl_pmi(self, url):
         """
         爬取pmi数据
@@ -1226,6 +1208,7 @@ class MarketDataAnalyzer:
             logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
             return None
 
+    @log_execution_time
     def crawl_new_bank_loan_addition(self, url):
         """
         爬取 中国 新增信贷数据
@@ -1282,6 +1265,6 @@ if __name__ == "__main__":
     # 初始化分析器
     analyzer = MarketDataAnalyzer()
     print("更新所有数据...")
-    analyzer.update_excel('crawler')
+    analyzer.update_excel()
     # analyzer.crawl_cpi('https://data.eastmoney.com/cjsj/cpi.html')
     print("\n程序运行结束")

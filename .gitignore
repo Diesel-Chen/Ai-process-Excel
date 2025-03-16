@@ -1,2 +1,15 @@
 data/
 src/config.py
+
+# Python 虚拟环境
+myenv/
+venv/
+env/
+.venv/
+
+# 其他通用忽略项
+__pycache__/
+*.py[cod]
+*.log
+*.sqlite
+.DS_Store
