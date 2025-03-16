@@ -109,6 +109,16 @@ class MarketDataAnalyzer:
         else:  # Linux/macOS
             return dt.strftime("%Y/%-m/%d")
 
+    def format_stee_price_date(self,raw_date):
+        # 解析中文月份
+        dt = datetime.strptime(raw_date, "%Y/%m/%d")
+
+        # 判断操作系统
+        if platform.system() == "Windows":
+            return dt.strftime("%Y/%#m/%d")
+        else:  # Linux/macOS
+            return dt.strftime("%Y/%-m/%d")
+
     def format_shibor_rate_date(self,raw_date):
         # 解析中文月份
         dt = datetime.strptime(raw_date, "%Y-%m-%d")
@@ -526,16 +536,16 @@ class MarketDataAnalyzer:
 
                     # 动态映射字段（根据实际列顺序调整），确保字段名称与COLUMN_DEFINITIONS一致
                     item = {
-                        "时间": cell_texts[0],
+                        "日期": self.format_stee_price_date(cell_texts[0]) ,
                         "本日": cell_texts[1],
                         "昨日": cell_texts[2],
-                        "日环比": cell_texts[3].strip("%"),
+                        "日环比": cell_texts[3],
                         "上周": cell_texts[4],
-                        "周环比": cell_texts[5].strip("%"),
+                        "周环比": cell_texts[5],
                         "上月度": cell_texts[6],
-                        "与上月比": cell_texts[7].strip("%"),
+                        "与上月比": cell_texts[7],
                         "去年同期": cell_texts[8],
-                        "与去年比": cell_texts[9].strip("%")
+                        "与去年比": cell_texts[9]
                     }
                     data.append(item)
 
@@ -546,6 +556,7 @@ class MarketDataAnalyzer:
                     continue
 
             logger.info(f"成功抓取 Steel price 数据: {len(data)} 条记录")
+            logger.info(f"成功爬取数据: {data}")
             return data
 
         except Exception as e:
