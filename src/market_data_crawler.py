@@ -325,7 +325,10 @@ class MarketDataAnalyzer:
         for col_idx, col_name in enumerate(columns, 1):
             value = data.get(col_name, '')
             cell = worksheet.cell(row=row, column=col_idx, value=value)
-            cell.alignment = Alignment(horizontal='right')
+            if sheet_name == 'Import and Export' and col_idx == 1:
+                cell.alignment = Alignment(horizontal='left')
+            else:
+                cell.alignment = Alignment(horizontal='right')
 
         logger.info(f"已在 {sheet_name} 的第 {row} 行写入月度数据")
 
@@ -991,7 +994,7 @@ class MarketDataAnalyzer:
                 }
                 result_list.append(record)
 
-            logger.info(f"成功抓取 Import and Export 数据: {len(result_list)} 条记录")
+            logger.info(f"成功抓取 Import and Export 数据: {result_list} 条记录")
             return result_list
 
         except Exception as e:
