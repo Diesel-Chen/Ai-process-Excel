@@ -129,6 +129,24 @@ class MarketDataAnalyzer:
         else:  # Linux/macOS
             return dt.strftime("%Y/%-m/%d")
 
+    def format_sofr_date(self, raw_date):
+        # 获取当前年份
+        current_year = datetime.now().year
+        # 拼接年份、月份和日期
+        full_date_str = f"{current_year}/{raw_date}"
+
+        try:
+            # 解析日期字符串为 datetime 对象
+            dt = datetime.strptime(full_date_str, "%Y/%m/%d")
+            # 判断操作系统
+            if platform.system() == "Windows":
+                return dt.strftime("%Y/%#m/%d")
+            else:  # Linux/macOS
+                return dt.strftime("%Y/%-m/%d")
+        except ValueError:
+            print(f"日期解析失败，输入的日期 {raw_date} 格式可能不正确。")
+            return None
+
     def get_data_by_openai(self, url):
         """
         使用OpenAI分析市场数据URL并返回结构化数据
@@ -307,7 +325,7 @@ class MarketDataAnalyzer:
         # 获取最后一行的日期值
         last_date_value = worksheet.cell(row=last_row, column=1).value
 
-        print('last_date_value:', last_date_value)
+        print('excel_last_date_value:', last_date_value, '类型:', type(last_date_value))
 
         # 解析现有日期
         if isinstance(last_date_value, datetime):
@@ -315,9 +333,12 @@ class MarketDataAnalyzer:
         else:
             try:
                 if last_date_value:
-                    parts = list(map(int, str(last_date_value).split('/')))
-                    if len(parts) == 3:
-                        last_date = datetime(*parts)
+                    if sheet_name == 'SOFR':
+                        month, day, year = map(int, str(last_date_value).split('/'))
+                        last_date = datetime(year, month, day)
+                    else:
+                        year, month, day = map(int, str(last_date_value).split('/'))
+                        last_date = datetime(year, month, day)
             except Exception as e:
                 logger.warning(f"解析现有日期 '{last_date_value}' 失败: {str(e)}")
 
@@ -373,8 +394,22 @@ class MarketDataAnalyzer:
                 if isinstance(value_dt, datetime):
                     value = value_dt.strftime('%Y-%m-%d')
                     print('value:', value)
+            if sheet_name == 'SOFR' and col_idx == 1:
+                value_dt = datetime.strptime(value, '%Y/%m/%d')
+                if isinstance(value_dt, datetime):
+                    value = value_dt.strftime('%m/%d/%Y')
+                    # 去掉月份和日期的前导零
+                    month, day, year = value.split('/')
+                    month = month.lstrip('0') if month.startswith('0') and len(month) > 1 else month
+                    day = day.lstrip('0') if day.startswith('0') and len(day) > 1 else day
+                    value = f"{month}/{day}/{year}"
+                    print('value:', value)
             cell = worksheet.cell(row=row_num, column=col_idx, value=value)
             if sheet_name == 'Shibor':
+                cell.alignment = Alignment(horizontal='left')
+            elif sheet_name == 'SOFR' and col_idx == 1:
+                cell.alignment = Alignment(horizontal='left')
+            elif sheet_name == 'SOFR' and col_idx == 2:
                 cell.alignment = Alignment(horizontal='left')
             else:
                 cell.alignment = Alignment(horizontal='right')
@@ -698,7 +733,8 @@ class MarketDataAnalyzer:
 
                 # 按顺序提取字段，确保字段名称与COLUMN_DEFINITIONS一致
                 record = {
-                    "日期": cells[0].text.strip(),
+                    "日期": self.format_sofr_date(cells[0].text.strip()),
+                    "Rate Type":'SOFR',
                     "RATE(%)": cells[1].text.strip(),
                     "1ST PERCENTILE(%)": cells[2].text.strip(),
                     "25TH PERCENTILE(%)": cells[3].text.strip(),
@@ -709,6 +745,7 @@ class MarketDataAnalyzer:
                 result_list.append(record)
 
             logger.info(f"成功抓取 SOFR 数据: {len(result_list)} 条记录")
+            logger.info(f"成功抓取 SOFR 数据: {result_list}")
             return result_list
 
         except Exception as e:
