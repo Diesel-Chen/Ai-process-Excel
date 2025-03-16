@@ -24,9 +24,17 @@ from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 from webdriver_manager.firefox import GeckoDriverManager
 from webdriver_manager.microsoft import EdgeChromiumDriverManager
-from selenium.common.exceptions import StaleElementReferenceException
+from selenium.common.exceptions import StaleElementReferenceException, TimeoutException, WebDriverException
 
 import time
+import concurrent.futures
+
+# 在脚本开头导入并配置连接池
+from urllib3.poolmanager import PoolManager
+import urllib3
+
+# 增加连接池大小
+urllib3.connection_from_url = lambda url, **kw: PoolManager(num_pools=10, maxsize=10, **kw).connection_from_url(url)
 
 # 设置日志
 logging.basicConfig(level=getattr(logging, config.LOG_LEVEL))
@@ -42,72 +50,156 @@ def log_execution_time(func):
         return result
     return wrapper
 
+def retry_on_timeout(func):
+    """重试装饰器，用于处理超时情况"""
+    def wrapper(*args, **kwargs):
+        max_retries = 3
+        retry_count = 0
+        while retry_count < max_retries:
+            try:
+                return func(*args, **kwargs)
+            except TimeoutException:
+                retry_count += 1
+                logger.warning(f"第{retry_count}次尝试超时，正在重试...")
+                if retry_count >= max_retries:
+                    logger.error(f"已达到最大重试次数({max_retries})，放弃尝试")
+                    return None
+                # 每次重试增加等待时间
+                time.sleep(2 * retry_count)
+            except Exception as e:
+                logger.error(f"发生非超时错误: {str(e)}")
+                return None
+    return wrapper
+
 class MarketDataAnalyzer:
     _driver = None
+    _driver_lock = False  # 简单锁，防止并发初始化
 
     def __init__(self):
         print("初始化市场数据分析器...")
         # 初始化User-Agent生成器
         self.ua = UserAgent()
+        # 预先初始化WebDriver
+        self._init_driver()
+
+    def _init_driver(self):
+        """
+        优化的WebDriver初始化方法
+        """
+        if MarketDataAnalyzer._driver is not None:
+            return
+
+        if MarketDataAnalyzer._driver_lock:
+            # 等待其他线程初始化完成
+            wait_count = 0
+            while MarketDataAnalyzer._driver is None and wait_count < 30:
+                time.sleep(0.5)
+                wait_count += 1
+            if MarketDataAnalyzer._driver is not None:
+                return
+
+        MarketDataAnalyzer._driver_lock = True
+
+        try:
+            # 检测操作系统
+            system = platform.system()
+            logger.info(f"检测到操作系统: {system}")
+
+            # 设置通用选项
+            options = webdriver.ChromeOptions()
+            options.add_argument('--headless')
+            options.add_argument('--disable-gpu')
+            options.add_argument('--no-sandbox')
+            options.add_argument('--disable-dev-shm-usage')
+            options.add_argument(f'user-agent={UserAgent().random}')
+
+            # 设置页面加载策略为eager，加快加载速度
+            options.page_load_strategy = 'eager'
+
+            # 禁用图片加载，提高性能
+            prefs = {
+                "profile.managed_default_content_settings.images": 2,
+                "profile.default_content_setting_values.notifications": 2
+            }
+            options.add_experimental_option("prefs", prefs)
+
+            # 根据操作系统选择合适的驱动
+            try:
+                # 首先尝试Chrome
+                driver_path = ChromeDriverManager().install()  # 移除 cache_valid_range 参数
+                service = Service(executable_path=driver_path)
+                MarketDataAnalyzer._driver = webdriver.Chrome(service=service, options=options)
+                logger.info("成功初始化 Chrome WebDriver")
+            except Exception as e:
+                logger.warning(f"Chrome WebDriver 初始化失败: {str(e)}")
+
+                try:
+                    # 尝试Edge
+                    edge_options = webdriver.EdgeOptions()
+                    for arg in options.arguments:
+                        edge_options.add_argument(arg)
+                    edge_options.page_load_strategy = 'eager'
+
+                    driver_path = EdgeChromiumDriverManager().install()  # 移除 cache_valid_range 参数
+                    service = Service(executable_path=driver_path)
+                    MarketDataAnalyzer._driver = webdriver.Edge(service=service, options=edge_options)
+                    logger.info("成功初始化 Edge WebDriver")
+                except Exception as e:
+                    logger.warning(f"Edge WebDriver 初始化失败: {str(e)}")
+
+                    try:
+                        # 最后尝试Firefox
+                        firefox_options = webdriver.FirefoxOptions()
+                        for arg in options.arguments:
+                            if not arg.startswith('--disable-dev-shm-usage') and not arg.startswith('--no-sandbox'):
+                                firefox_options.add_argument(arg)
+                        firefox_options.page_load_strategy = 'eager'
+
+                        driver_path = GeckoDriverManager().install()  # 移除 cache_valid_range 参数
+                        service = Service(executable_path=driver_path)
+                        MarketDataAnalyzer._driver = webdriver.Firefox(service=service, options=firefox_options)
+                        logger.info("成功初始化 Firefox WebDriver")
+                    except Exception as e:
+                        logger.error(f"所有WebDriver初始化失败: {str(e)}")
+                        raise Exception("无法初始化任何WebDriver")
+
+        except Exception as e:
+            logger.error(f"WebDriver初始化失败: {str(e)}")
+            MarketDataAnalyzer._driver_lock = False
+            raise
+
+        MarketDataAnalyzer._driver_lock = False
 
     @classmethod
     def get_driver(cls):
+        """
+        获取WebDriver实例，如果不存在则初始化
+        """
         if cls._driver is None:
-            browsers = [
-                {
-                    'name': 'Chrome',
-                    'options': webdriver.ChromeOptions(),
-                    'service': Service(ChromeDriverManager().install()),
-                    'driver': webdriver.Chrome
-                },
-                {
-                    'name': 'Firefox',
-                    'options': webdriver.FirefoxOptions(),
-                    'service': Service(GeckoDriverManager().install()),
-                    'driver': webdriver.Firefox
-                },
-                {
-                    'name': 'Edge',
-                    'options': webdriver.EdgeOptions(),
-                    'service': Service(EdgeChromiumDriverManager().install()),
-                    'driver': webdriver.Edge
-                }
-            ]
+            instance = cls()
 
-            for browser in browsers:
-                try:
-                    # 设置通用选项
-                    browser['options'].add_argument('--headless')
-                    browser['options'].add_argument('--disable-gpu')
-                    browser['options'].add_argument(f'user-agent={UserAgent().random}')
+        # 检查驱动是否仍然有效
+        try:
+            if cls._driver is not None:
+                cls._driver.current_url  # 尝试访问属性以检查驱动是否仍然有效
+        except (WebDriverException, Exception) as e:
+            logger.warning(f"WebDriver已失效，重新初始化: {str(e)}")
+            cls._driver = None
+            instance = cls()
 
-                    # 修复驱动路径问题（关键！）
-                    if browser['name'] == 'Chrome':
-                        # 显式指定驱动路径（避免使用缓存中的错误文件）
-                        driver_path = ChromeDriverManager().install()
-                        service = Service(executable_path=driver_path)
-                        cls._driver = webdriver.Chrome(service=service, options=browser['options'])
-                    else:
-                        # 其他浏览器同理
-                        service = browser['service']
-                        cls._driver = browser['driver'](service=service, options=browser['options'])
-
-                    logger.info(f"成功初始化 {browser['name']} WebDriver")
-                    return cls._driver
-                except Exception as e:
-                    logger.warning(f"{browser['name']} WebDriver 初始化失败: {str(e)}")
-                    continue
-
-            raise Exception("所有浏览器驱动初始化失败！")
         return cls._driver
 
     def close_driver(self):
         """
         关闭WebDriver实例
         """
-        if self._driver:
-            self._driver.quit()
-            self.__class__._driver = None
+        if self.__class__._driver:
+            try:
+                self.__class__._driver.quit()
+            except Exception as e:
+                logger.warning(f"关闭WebDriver时出错: {str(e)}")
+            finally:
+                self.__class__._driver = None
 
     def format_exchange_rate_date(self,raw_date):
         # 解析中文月份
@@ -198,6 +290,7 @@ class MarketDataAnalyzer:
             return dt.strftime("%Y/%-m/%d")
 
     @log_execution_time
+    @retry_on_timeout
     def crawl_exchange_rate(self, url):
         """
         使用爬虫直接获取汇率数据
@@ -214,16 +307,16 @@ class MarketDataAnalyzer:
             }
 
             # 添加随机延时
-            time.sleep(2 + random.random() * 3)
+            time.sleep(1 + random.random() * 2)  # 减少等待时间
 
             # 发送请求
             logger.info(f"正在请求URL: {url}")
-            response = requests.get(url, headers=headers, timeout=15)
+            response = requests.get(url, headers=headers, timeout=10)  # 减少超时时间
             response.raise_for_status()
 
             soup = BeautifulSoup(response.text, 'html.parser')
 
-         # 选择表格的前两行数据
+            # 选择表格的前两行数据
             rows = soup.select('tr.historical-data-v2_price__atUfP')[:2]
 
             if len(rows) < 2:
@@ -443,59 +536,72 @@ class MarketDataAnalyzer:
 
     def update_excel(self):
         """
-        更新现有Excel文件，追加数据到对应sheet的最后一行（检查日期是否重复）
-
-        Args:
-            method (str): 数据获取方法，可选值为'crawler'、'openai'或'both'
+        更新现有Excel文件，追加数据到对应sheet的最后一行（优化版）
         """
-        MAX_RETRIES = 3  # 最大重试次数
+        MAX_RETRIES = 2  # 最大重试次数
         try:
             results = {}
 
-            # 处理汇率数据（原有逻辑）
-            # for pair, url in config.CURRENCY_PAIRS.items():
-            #     print(f"\n正在分析 {pair} 的数据...")
-            #     data = {}
-            #     crawler_data = None
-            #     retries = 0
-            #     while retries < MAX_RETRIES:
-            #         try:
-            #             crawler_data = self.crawl_exchange_rate(url)
-            #             if crawler_data:
-            #                 data = crawler_data
-            #                 print(f"成功获取 {pair} 的爬虫数据")
-            #                 break
-            #         except requests.RequestException as e:
-            #             logger.warning(f"第 {retries + 1} 次请求 {url} 失败: {str(e)}，正在重试...")
-            #             retries += 1
-            #             time.sleep(2)  # 等待2秒后重试
+            # 处理汇率数据
+            for pair, url in config.CURRENCY_PAIRS.items():
+                print(f"\n正在分析 {pair} 的数据...")
+                data = {}
+                crawler_data = None
+                retries = 0
+                while retries < MAX_RETRIES:
+                    try:
+                        crawler_data = self.crawl_exchange_rate(url)
+                        if crawler_data:
+                            data = crawler_data
+                            print(f"成功获取 {pair} 的爬虫数据")
+                            break
+                    except requests.RequestException as e:
+                        logger.warning(f"第 {retries + 1} 次请求 {url} 失败: {str(e)}，正在重试...")
+                        retries += 1
+                        time.sleep(2)  # 等待2秒后重试
 
-            #     if not crawler_data:
-            #         logger.error(f"多次尝试后仍无法获取 {pair} 的爬虫数据，跳过")
+                if not crawler_data:
+                    logger.error(f"多次尝试后仍无法获取 {pair} 的爬虫数据，跳过")
 
-            #     results[pair] = data
+                results[pair] = data
 
-            # 处理日频数据
-            for sheet_name, info in config.DAILY_DATA_PAIRS.items():
-                print(f"\n正在分析日频数据 {sheet_name}...")
+            # 使用线程池并行处理日频数据爬取
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                # 创建任务字典
+                future_to_sheet = {}
+
+                # 提交日频数据爬取任务
+                for sheet_name, info in config.DAILY_DATA_PAIRS.items():
+                    print(f"\n正在分析日频数据 {sheet_name}...")
+                    crawler_method = getattr(self, info['crawler'])
+                    future = executor.submit(crawler_method, info['url'])
+                    future_to_sheet[future] = sheet_name
+
+                # 处理完成的任务
+                for future in concurrent.futures.as_completed(future_to_sheet):
+                    sheet_name = future_to_sheet[future]
+                    try:
+                        data = future.result()
+                        if data:
+                            results[sheet_name] = data
+                            print(f"成功获取日频数据 {sheet_name}")
+                        else:
+                            logger.warning(f"获取 {sheet_name} 数据失败")
+                    except Exception as e:
+                        logger.error(f"处理 {sheet_name} 数据时出错: {str(e)}")
+
+            # 处理月度数据
+            for sheet_name, info in config.MONTHLY_DATA_PAIRS.items():
+                print(f"\n正在分析月度数据 {sheet_name}...")
                 crawler_method = getattr(self, info['crawler'])
                 data = crawler_method(info['url'])
                 if data:
-                    results[sheet_name] = data
-                    print(f"成功获取日频数据 {sheet_name}")
-
-            # 处理月度数据
-            # for sheet_name, info in config.MONTHLY_DATA_PAIRS.items():
-            #     print(f"\n正在分析月度数据 {sheet_name}...")
-            #     crawler_method = getattr(self, info['crawler'])
-            #     data = crawler_method(info['url'])
-            #     if data:
-            #         # 只保留第一行数据
-            #         if isinstance(data, list) and len(data) > 0:
-            #             results[sheet_name] = data[0]
-            #         else:
-            #             results[sheet_name] = data
-            #         print(f"成功获取月度数据 {sheet_name}")
+                    # 只保留第一行数据
+                    if isinstance(data, list) and len(data) > 0:
+                        results[sheet_name] = data[0]
+                    else:
+                        results[sheet_name] = data
+                    print(f"成功获取月度数据 {sheet_name}")
 
             # 加载现有Excel文件
             wb = load_workbook(config.EXCEL_OUTPUT_PATH)
@@ -548,51 +654,57 @@ class MarketDataAnalyzer:
             self.close_driver()
 
     @log_execution_time
+    @retry_on_timeout
     def crawl_steel_price(self, url):
         """
-        爬取钢铁价格数据（修复StaleElement异常版）
-
-        Args:
-            url (str): 数据URL
+        爬取钢铁价格数据（优化版）
         """
         logger.info(f"正在请求URL: {url}")
         driver = self.get_driver()
-        driver.get(url)
 
         try:
-            # 点击"相对价格指数走势图"
-            WebDriverWait(driver, 15).until(
-                EC.element_to_be_clickable((By.XPATH, '//span[text()="相对价格指数走势图"]'))
-            ).click()
+            # 针对特定站点增加超时时间
+            if "mysteel.com" in url:  # Steel price站点
+                driver.set_page_load_timeout(60)  # 增加到60秒
+                wait = WebDriverWait(driver, 30)  # 增加等待时间
+            elif "euribor-rates.eu" in url:  # ESTER站点
+                driver.set_page_load_timeout(60)
+                wait = WebDriverWait(driver, 30)
+            else:
+                driver.set_page_load_timeout(20)
+                wait = WebDriverWait(driver, 10)
 
-            # 等待数据完全加载（关键修复点）
-            WebDriverWait(driver, 15).until(
-                EC.presence_of_element_located((By.XPATH, '//td[contains(text(),"/") and string-length(text())>8]'))  # 匹配日期格式数据
-            )
+            driver.get(url)
 
-            # 获取表格引用（每次重新获取元素）
+            # 使用显式等待，减少固定等待时间
+            wait.until(EC.element_to_be_clickable((By.XPATH, '//span[text()="相对价格指数走势图"]'))).click()
+
+            # 等待数据完全加载
+            wait.until(EC.presence_of_element_located((By.XPATH, '//td[contains(text(),"/") and string-length(text())>8]')))
+
+            # 获取表格引用
             table = driver.find_element(By.XPATH, '//table[contains(@class,"detailTab")]')
 
-            # 单次获取所有需要的数据（避免重复查询DOM）
+            # 单次获取所有需要的数据
             rows = table.find_elements(By.XPATH, './/tbody/tr[position()<=2]')
             data = []
 
             for row in rows:
                 try:
-                    # 实时获取当前行元素（防止状态过期）
+                    # 实时获取当前行元素
                     cells = row.find_elements(By.XPATH, './/td[not(contains(@style,"none"))]')
 
-                    # 过滤无效行（关键修复点）
-                    if len(cells) < 10:  # 根据调试结果调整阈值
+                    # 过滤无效行
+                    if len(cells) < 10:
                         logger.warning(f"跳过无效行，列数：{len(cells)}")
                         continue
 
-                    # 立即提取文本内容（防止元素失效）
+                    # 立即提取文本内容
                     cell_texts = [cell.text for cell in cells]
 
-                    # 动态映射字段（根据实际列顺序调整），确保字段名称与COLUMN_DEFINITIONS一致
+                    # 动态映射字段
                     item = {
-                        "日期": self.format_stee_price_date(cell_texts[0]) ,
+                        "日期": self.format_stee_price_date(cell_texts[0]),
                         "本日": cell_texts[1],
                         "昨日": cell_texts[2],
                         "日环比": cell_texts[3],
@@ -607,14 +719,17 @@ class MarketDataAnalyzer:
 
                 except StaleElementReferenceException:
                     logger.warning("检测到元素过期，重新获取表格数据...")
+                    # 重新获取表格和行
                     table = driver.find_element(By.XPATH, '//table[contains(@class,"detailTab")]')
                     rows = table.find_elements(By.XPATH, './/tbody/tr[position()<=2]')
                     continue
 
             logger.info(f"成功抓取 Steel price 数据: {len(data)} 条记录")
-            logger.info(f"成功爬取数据: {data}")
             return data
 
+        except TimeoutException:
+            logger.error("页面加载超时，请检查网络连接或URL是否正确")
+            return None
         except Exception as e:
             logger.error(f"爬取钢铁价格数据失败: {str(e)}", exc_info=True)
             return None
@@ -622,24 +737,23 @@ class MarketDataAnalyzer:
     @log_execution_time
     def crawl_shibor_rate(self, url):
         """
-        爬取Shibor利率数据
-
-        Args:
-            url (str): 数据URL
+        爬取Shibor利率数据（优化版）
         """
         driver = self.get_driver()
-        driver.get(url)
         logger.info(f"正在请求URL: {url}")
 
         try:
-            time.sleep(3)  # 等待页面加载
-            # 新式定位方法（Selenium 4.x+语法）
-            table = driver.find_element(By.ID, 'shibor-tendays-show-data')
+            # 设置页面加载超时
+            driver.set_page_load_timeout(20)
+            driver.get(url)
+
+            # 使用显式等待替代固定等待
+            wait = WebDriverWait(driver, 10)
+            table = wait.until(EC.presence_of_element_located((By.ID, 'shibor-tendays-show-data')))
 
             # 初始化结果数组
             result_list = []
-
-            row_count = 0  # 行计数
+            row_count = 0
 
             for row in table.find_elements(By.CSS_SELECTOR, "tr:has(td)"):
                 if row_count >= 2:
@@ -663,6 +777,9 @@ class MarketDataAnalyzer:
             logger.info(f"成功抓取 Shibor 数据: {result_list}")
             return result_list
 
+        except TimeoutException:
+            logger.error("页面加载超时，请检查网络连接或URL是否正确")
+            return None
         except Exception as e:
             logger.error(f"数据抓取失败: {str(e)}")
             return None
@@ -670,19 +787,19 @@ class MarketDataAnalyzer:
     @log_execution_time
     def crawl_lpr(self, url):
         """
-        爬取LPR数据
-
-        Args:
-            url (str): 数据URL
+        爬取LPR数据（优化版）
         """
         driver = self.get_driver()
-        driver.get(url)
         logger.info(f"正在请求URL: {url}")
 
         try:
-            time.sleep(3)  # 等待页面加载
-            # 新式定位方法（Selenium 4.x+语法）
-            table = driver.find_element(By.ID, 'lpr-ten-days-table')
+            # 设置页面加载超时
+            driver.set_page_load_timeout(20)
+            driver.get(url)
+
+            # 使用显式等待替代固定等待
+            wait = WebDriverWait(driver, 10)
+            table = wait.until(EC.presence_of_element_located((By.ID, 'lpr-ten-days-table')))
 
             # 提取关键数据
             rows = table.find_elements(By.CSS_SELECTOR, "tr")
@@ -691,11 +808,12 @@ class MarketDataAnalyzer:
 
             # 初始化结果数组
             result_list = []
-
             row_index = 0
+
             for row in data_rows:
                 if row_index > 2:
                     break
+
                 cells = row.find_elements(By.TAG_NAME, "td")
                 if len(cells) < 3:
                     continue
@@ -708,15 +826,18 @@ class MarketDataAnalyzer:
                     "日期": date,
                     "1Y": term_1y,
                     "5Y": term_5y,
-                    "PBOC_(6M-1Y)":4.35,
-                    "rowPBOC_(>5Y)":4.9
+                    "PBOC_(6M-1Y)": 4.35,
+                    "rowPBOC_(>5Y)": 4.9
                 }
                 result_list.append(current_record)
-                row_index+=1
+                row_index += 1
 
             logger.info(f"成功抓取 LPR 数据: {result_list}")
             return result_list
 
+        except TimeoutException:
+            logger.error("页面加载超时，请检查网络连接或URL是否正确")
+            return None
         except Exception as e:
             logger.error(f"数据抓取失败: {str(e)}")
             return None
@@ -724,25 +845,22 @@ class MarketDataAnalyzer:
     @log_execution_time
     def crawl_sofr(self, url):
         """
-        爬取SOFR数据并按指定顺序返回前两行数据
-
-        Args:
-            url (str): 数据URL
-
-        Returns:
-            list: 包含前两行数据的字典列表，按指定字段顺序排列
+        爬取SOFR数据（优化版）
         """
         driver = self.get_driver()
-        driver.get(url)
         logger.info(f"正在请求URL: {url}")
 
         try:
-            time.sleep(3)  # 等待页面加载
-            table = driver.find_element(By.ID, 'pr_id_1-table')
+            # 设置页面加载超时
+            driver.set_page_load_timeout(20)
+            driver.get(url)
 
-            # 获取所有数据行（跳过可能存在的表头）
+            # 使用显式等待替代固定等待
+            wait = WebDriverWait(driver, 10)
+            table = wait.until(EC.presence_of_element_located((By.ID, 'pr_id_1-table')))
+
+            # 获取所有数据行
             rows = table.find_elements(By.CSS_SELECTOR, "tr:has(td)")
-
             result_list = []
 
             # 处理前两行数据
@@ -754,10 +872,10 @@ class MarketDataAnalyzer:
                     logger.warning(f"检测到不完整行，实际列数：{len(cells)}")
                     continue
 
-                # 按顺序提取字段，确保字段名称与COLUMN_DEFINITIONS一致
+                # 按顺序提取字段
                 record = {
                     "日期": self.format_sofr_date(cells[0].text.strip()),
-                    "Rate Type":'SOFR',
+                    "Rate Type": 'SOFR',
                     "RATE(%)": cells[1].text.strip(),
                     "1ST PERCENTILE(%)": cells[2].text.strip(),
                     "25TH PERCENTILE(%)": cells[3].text.strip(),
@@ -768,9 +886,11 @@ class MarketDataAnalyzer:
                 result_list.append(record)
 
             logger.info(f"成功抓取 SOFR 数据: {len(result_list)} 条记录")
-            logger.info(f"成功抓取 SOFR 数据: {result_list}")
             return result_list
 
+        except TimeoutException:
+            logger.error("页面加载超时，请检查网络连接或URL是否正确")
+            return None
         except Exception as e:
             logger.error(f"数据抓取失败: {str(e)}", exc_info=True)
             return None
@@ -778,28 +898,29 @@ class MarketDataAnalyzer:
     @log_execution_time
     def crawl_ester(self, url):
         """
-        爬取页面中第一个ESTER表格数据
-
-        Args:
-            url (str): 数据URL
+        爬取ESTER数据（优化版）
         """
         driver = self.get_driver()
-        driver.get(url)
         logger.info(f"正在请求URL: {url}")
 
         try:
-            # 显式等待表格元素加载完成
-            wait = WebDriverWait(driver, 3)
+            # 设置页面加载超时
+            driver.set_page_load_timeout(30)
+            driver.get(url)
+
+            # 使用显式等待替代固定等待，增加超时时间
+            wait = WebDriverWait(driver, 15)
+
+            # 使用更精确的选择器
             tables = wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "table.table-striped")))
             if not tables:
                 logger.error("未找到目标表格")
                 return None
-            table = tables[0]  # 取第一个表格
 
+            table = tables[0]  # 取第一个表格
 
             # 获取有效数据行（跳过表头）
             rows = table.find_elements(By.CSS_SELECTOR, "tr:has(td)")
-
             logger.info(f"找到数据行数：{len(rows)}")
 
             result_list = []
@@ -813,7 +934,7 @@ class MarketDataAnalyzer:
                     logger.warning(f"异常行数据，跳过。实际列数：{len(cells)}")
                     continue
 
-                # 创建格式化记录，确保字段名称与COLUMN_DEFINITIONS一致
+                # 创建格式化记录
                 record = {
                     "日期": self.format_ester_date(cells[0].get_attribute('textContent').strip()),
                     "value": cells[1].get_attribute('textContent').strip().replace(' %', '')
@@ -821,38 +942,36 @@ class MarketDataAnalyzer:
                 result_list.append(record)
 
             logger.info(f"成功抓取 ESTER 数据: {len(result_list)} 条记录")
-            logger.info(f"成功抓取 ESTER 数据: {result_list} ")
             return result_list
 
+        except TimeoutException:
+            logger.error("页面加载超时，请检查网络连接或URL是否正确")
+            return None
         except Exception as e:
             logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
             return None
 
-    # todo 等待时间好久 不知为啥
     @log_execution_time
     def crawl_jpy_rate(self, url):
         """
-        爬取页面jpy_rate数据
-
-        Args:
-            url (str): 数据URL
+        爬取JPY利率数据（优化版）
         """
         driver = self.get_driver()
-        driver.get(url)
         logger.info(f"正在请求URL: {url}")
 
         try:
-            time.sleep(3)
-            # 定位第一个表格（两种方式任选其一）
-            # 方式1：通过CSS选择器列表索引
-            table = driver.find_element(By.CSS_SELECTOR, "table.table[class='table ']")
-            if not table:
-                logger.error("未找到目标表格")
-                return None
+            # 设置页面加载超时
+            driver.set_page_load_timeout(30)
+            driver.get(url)
+
+            # 使用显式等待替代固定等待
+            wait = WebDriverWait(driver, 15)
+
+            # 使用更精确的选择器
+            table = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table[class='table ']")))
 
             # 获取有效数据行（跳过表头）
             rows = table.find_elements(By.CSS_SELECTOR, "tr:has(td)")
-
             result_list = []
 
             # 处理前两行数据
@@ -864,7 +983,7 @@ class MarketDataAnalyzer:
                     logger.warning(f"异常行数据，跳过。实际列数：{len(cells)}")
                     continue
 
-                # 创建格式化记录，确保字段名称与COLUMN_DEFINITIONS一致
+                # 创建格式化记录
                 record = {
                     "日期": self.format_jpy_rate_date(cells[0].get_attribute('textContent').strip()),
                     "value": cells[1].get_attribute('textContent').strip().replace(' %', '')
@@ -872,37 +991,35 @@ class MarketDataAnalyzer:
                 result_list.append(record)
 
             logger.info(f"成功抓取 JPY rate 数据: {len(result_list)} 条记录")
-            logger.info(f"成功抓取 JPY rate 数据: {result_list}")
             return result_list
 
+        except TimeoutException:
+            logger.error("页面加载超时，请检查网络连接或URL是否正确")
+            return None
         except Exception as e:
             logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
             return None
 
     @log_execution_time
+    @retry_on_timeout
     def crawl_us_interest_rate(self, url):
         """
         爬取美国利率数据
-
-        Args:
-            url (str): 数据URL
         """
         driver = self.get_driver()
-        driver.get(url)
         logger.info(f"正在请求URL: {url}")
 
         try:
-            time.sleep(3)
-            # 定位第一个表格（两种方式任选其一）
-            # 方式1：通过CSS选择器列表索引
-            table = driver.find_element(By.CSS_SELECTOR, "table.table-model")
-            if not table:
-                logger.error("未找到目标表格")
-                return None
+            # 设置页面加载超时
+            driver.set_page_load_timeout(30)
+            driver.get(url)
+
+            # 使用显式等待替代固定等待
+            wait = WebDriverWait(driver, 15)
+            table = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-model")))
 
             # 获取有效数据行（跳过表头）
             rows = table.find_elements(By.CSS_SELECTOR, "tr:has(td)")
-
             result_list = []
 
             # 处理前两行数据
@@ -914,7 +1031,7 @@ class MarketDataAnalyzer:
                     logger.warning(f"异常行数据，跳过。实际列数：{len(cells)}")
                     continue
 
-                # 创建格式化记录，确保字段名称与COLUMN_DEFINITIONS一致
+                # 创建格式化记录
                 record = {
                     "日期": cells[0].text.strip(),
                     "前值": cells[1].text.strip(),
@@ -923,37 +1040,36 @@ class MarketDataAnalyzer:
                 }
                 result_list.append(record)
 
-            logger.info(f"成功抓取 US Interest Rate 数据: {result_list} ")
+            logger.info(f"成功抓取 US Interest Rate 数据: {len(result_list)} 条记录")
             return result_list
 
+        except TimeoutException:
+            logger.error("页面加载超时，请检查网络连接或URL是否正确")
+            return None
         except Exception as e:
             logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
             return None
 
     @log_execution_time
+    @retry_on_timeout
     def crawl_import_export(self, url):
         """
         爬取进出口贸易数据
-
-        Args:
-            url (str): 数据URL
         """
         driver = self.get_driver()
-        driver.get(url)
         logger.info(f"正在请求URL: {url}")
 
         try:
-            time.sleep(3)
-            # 定位第一个表格（两种方式任选其一）
-            # 方式1：通过CSS选择器列表索引
-            table = driver.find_element(By.CSS_SELECTOR, "table.table-model")
-            if not table:
-                logger.error("未找到目标表格")
-                return None
+            # 设置页面加载超时
+            driver.set_page_load_timeout(30)
+            driver.get(url)
+
+            # 使用显式等待替代固定等待
+            wait = WebDriverWait(driver, 15)
+            table = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-model")))
 
             # 获取有效数据行（跳过表头）
             rows = table.find_elements(By.CSS_SELECTOR, "tr:has(td)")
-
             result_list = []
 
             # 处理前两行数据
@@ -965,7 +1081,7 @@ class MarketDataAnalyzer:
                     logger.warning(f"异常行数据，跳过。实际列数：{len(cells)}")
                     continue
 
-                # 创建格式化记录，确保字段名称与COLUMN_DEFINITIONS一致
+                # 创建格式化记录
                 record = {
                     "日期": cells[0].text.strip(),
                     "当月出口额金额": cells[1].text.strip(),
@@ -981,37 +1097,36 @@ class MarketDataAnalyzer:
                 }
                 result_list.append(record)
 
-            logger.info(f"成功抓取 Import and Export 数据: {result_list} ")
+            logger.info(f"成功抓取 Import and Export 数据: {len(result_list)} 条记录")
             return result_list
 
+        except TimeoutException:
+            logger.error("页面加载超时，请检查网络连接或URL是否正确")
+            return None
         except Exception as e:
             logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
             return None
 
     @log_execution_time
+    @retry_on_timeout
     def crawl_money_supply(self, url):
         """
         爬取货币供应数据
-
-        Args:
-            url (str): 数据URL
         """
         driver = self.get_driver()
-        driver.get(url)
         logger.info(f"正在请求URL: {url}")
 
         try:
-            time.sleep(3)
-            # 定位第一个表格（两种方式任选其一）
-            # 方式1：通过CSS选择器列表索引
-            table = driver.find_element(By.CSS_SELECTOR, "table.table-model")
-            if not table:
-                logger.error("未找到目标表格")
-                return None
+            # 设置页面加载超时
+            driver.set_page_load_timeout(30)
+            driver.get(url)
+
+            # 使用显式等待替代固定等待
+            wait = WebDriverWait(driver, 15)
+            table = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-model")))
 
             # 获取有效数据行（跳过表头）
             rows = table.find_elements(By.CSS_SELECTOR, "tr:has(td)")
-
             result_list = []
 
             # 处理前两行数据
@@ -1023,7 +1138,7 @@ class MarketDataAnalyzer:
                     logger.warning(f"异常行数据，跳过。实际列数：{len(cells)}")
                     continue
 
-                # 创建格式化记录，确保字段名称与COLUMN_DEFINITIONS一致
+                # 创建格式化记录
                 record = {
                     "日期": cells[0].text.strip(),
                     "M2数量": cells[1].text.strip(),
@@ -1038,37 +1153,36 @@ class MarketDataAnalyzer:
                 }
                 result_list.append(record)
 
-            logger.info(f"成功抓取 Money Supply 数据: {result_list} ")
+            logger.info(f"成功抓取 Money Supply 数据: {len(result_list)} 条记录")
             return result_list
 
+        except TimeoutException:
+            logger.error("页面加载超时，请检查网络连接或URL是否正确")
+            return None
         except Exception as e:
             logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
             return None
 
     @log_execution_time
+    @retry_on_timeout
     def crawl_ppi(self, url):
         """
         爬取ppi数据
-
-        Args:
-            url (str): 数据URL
         """
         driver = self.get_driver()
-        driver.get(url)
         logger.info(f"正在请求URL: {url}")
 
         try:
-            time.sleep(3)
-            # 定位第一个表格（两种方式任选其一）
-            # 方式1：通过CSS选择器列表索引
-            table = driver.find_element(By.CSS_SELECTOR, "table.table-model")
-            if not table:
-                logger.error("未找到目标表格")
-                return None
+            # 设置页面加载超时
+            driver.set_page_load_timeout(30)
+            driver.get(url)
+
+            # 使用显式等待替代固定等待
+            wait = WebDriverWait(driver, 15)
+            table = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-model")))
 
             # 获取有效数据行（跳过表头）
             rows = table.find_elements(By.CSS_SELECTOR, "tr:has(td)")
-
             result_list = []
 
             # 处理前两行数据
@@ -1080,7 +1194,7 @@ class MarketDataAnalyzer:
                     logger.warning(f"异常行数据，跳过。实际列数：{len(cells)}")
                     continue
 
-                # 创建格式化记录，确保字段名称与COLUMN_DEFINITIONS一致
+                # 创建格式化记录
                 record = {
                     "日期": cells[0].text.strip(),
                     "当月": cells[1].text.strip(),
@@ -1089,37 +1203,36 @@ class MarketDataAnalyzer:
                 }
                 result_list.append(record)
 
-            logger.info(f"成功抓取 PPI 数据: {result_list}")
+            logger.info(f"成功抓取 PPI 数据: {len(result_list)} 条记录")
             return result_list
 
+        except TimeoutException:
+            logger.error("页面加载超时，请检查网络连接或URL是否正确")
+            return None
         except Exception as e:
             logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
             return None
 
     @log_execution_time
+    @retry_on_timeout
     def crawl_cpi(self, url):
         """
         爬取cpi数据
-
-        Args:
-            url (str): 数据URL
         """
         driver = self.get_driver()
-        driver.get(url)
         logger.info(f"正在请求URL: {url}")
 
         try:
-            time.sleep(3)
-            # 定位第一个表格（两种方式任选其一）
-            # 方式1：通过CSS选择器列表索引
-            table = driver.find_element(By.CSS_SELECTOR, "table.table-model")
-            if not table:
-                logger.error("未找到目标表格")
-                return None
+            # 设置页面加载超时
+            driver.set_page_load_timeout(30)
+            driver.get(url)
+
+            # 使用显式等待替代固定等待
+            wait = WebDriverWait(driver, 15)
+            table = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-model")))
 
             # 获取有效数据行（跳过表头）
             rows = table.find_elements(By.CSS_SELECTOR, "tr:has(td)")
-
             result_list = []
 
             # 处理前两行数据
@@ -1131,7 +1244,7 @@ class MarketDataAnalyzer:
                     logger.warning(f"异常行数据，跳过。实际列数：{len(cells)}")
                     continue
 
-                # 创建格式化记录，确保字段名称与COLUMN_DEFINITIONS一致
+                # 创建格式化记录
                 record = {
                     "日期": cells[0].text.strip(),
                     "全国当月": cells[1].text.strip(),
@@ -1149,37 +1262,36 @@ class MarketDataAnalyzer:
                 }
                 result_list.append(record)
 
-            logger.info(f"成功抓取 CPI 数据: {result_list}")
+            logger.info(f"成功抓取 CPI 数据: {len(result_list)} 条记录")
             return result_list
 
+        except TimeoutException:
+            logger.error("页面加载超时，请检查网络连接或URL是否正确")
+            return None
         except Exception as e:
             logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
             return None
 
     @log_execution_time
+    @retry_on_timeout
     def crawl_pmi(self, url):
         """
         爬取pmi数据
-
-        Args:
-            url (str): 数据URL
         """
         driver = self.get_driver()
-        driver.get(url)
         logger.info(f"正在请求URL: {url}")
 
         try:
-            time.sleep(3)
-            # 定位第一个表格（两种方式任选其一）
-            # 方式1：通过CSS选择器列表索引
-            table = driver.find_element(By.CSS_SELECTOR, "table.table-model")
-            if not table:
-                logger.error("未找到目标表格")
-                return None
+            # 设置页面加载超时
+            driver.set_page_load_timeout(30)
+            driver.get(url)
+
+            # 使用显式等待替代固定等待
+            wait = WebDriverWait(driver, 15)
+            table = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-model")))
 
             # 获取有效数据行（跳过表头）
             rows = table.find_elements(By.CSS_SELECTOR, "tr:has(td)")
-
             result_list = []
 
             # 处理前两行数据
@@ -1191,7 +1303,7 @@ class MarketDataAnalyzer:
                     logger.warning(f"异常行数据，跳过。实际列数：{len(cells)}")
                     continue
 
-                # 创建格式化记录，确保字段名称与COLUMN_DEFINITIONS一致
+                # 创建格式化记录
                 record = {
                     "日期": cells[0].text.strip(),
                     "制造业指数": cells[1].text.strip(),
@@ -1201,37 +1313,36 @@ class MarketDataAnalyzer:
                 }
                 result_list.append(record)
 
-            logger.info(f"成功抓取 PMI 数据: {result_list} ")
+            logger.info(f"成功抓取 PMI 数据: {len(result_list)} 条记录")
             return result_list
 
+        except TimeoutException:
+            logger.error("页面加载超时，请检查网络连接或URL是否正确")
+            return None
         except Exception as e:
             logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
             return None
 
     @log_execution_time
+    @retry_on_timeout
     def crawl_new_bank_loan_addition(self, url):
         """
         爬取 中国 新增信贷数据
-
-        Args:
-            url (str): 数据URL
         """
         driver = self.get_driver()
-        driver.get(url)
         logger.info(f"正在请求URL: {url}")
 
         try:
-            time.sleep(3)
-            # 定位第一个表格（两种方式任选其一）
-            # 方式1：通过CSS选择器列表索引
-            table = driver.find_element(By.CSS_SELECTOR, "table.table-model")
-            if not table:
-                logger.error("未找到目标表格")
-                return None
+            # 设置页面加载超时
+            driver.set_page_load_timeout(30)
+            driver.get(url)
+
+            # 使用显式等待替代固定等待
+            wait = WebDriverWait(driver, 15)
+            table = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-model")))
 
             # 获取有效数据行（跳过表头）
             rows = table.find_elements(By.CSS_SELECTOR, "tr:has(td)")
-
             result_list = []
 
             # 处理前两行数据
@@ -1254,9 +1365,12 @@ class MarketDataAnalyzer:
                 }
                 result_list.append(record)
 
-            logger.info(f"成功抓取 New Bank Loan Addition 数据: {result_list}")
+            logger.info(f"成功抓取 New Bank Loan Addition 数据: {len(result_list)} 条记录")
             return result_list
 
+        except TimeoutException:
+            logger.error("页面加载超时，请检查网络连接或URL是否正确")
+            return None
         except Exception as e:
             logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
             return None
