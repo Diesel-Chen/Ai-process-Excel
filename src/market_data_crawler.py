@@ -378,7 +378,6 @@ class MarketDataAnalyzer:
         # 获取最后一行的日期值
         last_date_value = worksheet.cell(row=last_row, column=1).value
 
-        print('excel_last_date_value:', last_date_value, '类型:', type(last_date_value))
 
         # 解析现有日期
         if isinstance(last_date_value, datetime):
@@ -476,44 +475,44 @@ class MarketDataAnalyzer:
         try:
             results = {}
 
-            # # 处理汇率数据（原有逻辑）
-            # for pair, url in config.CURRENCY_PAIRS.items():
-            #     print(f"\n正在分析 {pair} 的数据...")
-            #     data = {}
-            #     if method in ['crawler', 'both']:
-            #         crawler_data = None
-            #         retries = 0
-            #         while retries < MAX_RETRIES:
-            #             try:
-            #                 crawler_data = self.crawl_exchange_rate(url)
-            #                 if crawler_data:
-            #                     data = crawler_data
-            #                     print(f"成功获取 {pair} 的爬虫数据")
-            #                     break
-            #             except requests.RequestException as e:
-            #                 logger.warning(f"第 {retries + 1} 次请求 {url} 失败: {str(e)}，正在重试...")
-            #                 retries += 1
-            #                 time.sleep(2)  # 等待2秒后重试
+            # 处理汇率数据（原有逻辑）
+            for pair, url in config.CURRENCY_PAIRS.items():
+                print(f"\n正在分析 {pair} 的数据...")
+                data = {}
+                if method in ['crawler', 'both']:
+                    crawler_data = None
+                    retries = 0
+                    while retries < MAX_RETRIES:
+                        try:
+                            crawler_data = self.crawl_exchange_rate(url)
+                            if crawler_data:
+                                data = crawler_data
+                                print(f"成功获取 {pair} 的爬虫数据")
+                                break
+                        except requests.RequestException as e:
+                            logger.warning(f"第 {retries + 1} 次请求 {url} 失败: {str(e)}，正在重试...")
+                            retries += 1
+                            time.sleep(2)  # 等待2秒后重试
 
-            #         if not crawler_data:
-            #             logger.error(f"多次尝试后仍无法获取 {pair} 的爬虫数据，跳过")
+                    if not crawler_data:
+                        logger.error(f"多次尝试后仍无法获取 {pair} 的爬虫数据，跳过")
 
-            #     if method in ['openai', 'both']:
-            #         openai_data = self.get_data_by_openai(url)
-            #         if openai_data:
-            #             data['openai_analysis'] = openai_data['analysis']
-            #             print(f"成功获取 {pair} 的OpenAI分析数据")
+                if method in ['openai', 'both']:
+                    openai_data = self.get_data_by_openai(url)
+                    if openai_data:
+                        data['openai_analysis'] = openai_data['analysis']
+                        print(f"成功获取 {pair} 的OpenAI分析数据")
 
-            #     results[pair] = data
+                results[pair] = data
 
-            # # 处理日频数据
-            # for sheet_name, info in config.DAILY_DATA_PAIRS.items():
-            #     print(f"\n正在分析日频数据 {sheet_name}...")
-            #     crawler_method = getattr(self, info['crawler'])
-            #     data = crawler_method(info['url'])
-            #     if data:
-            #         results[sheet_name] = data
-            #         print(f"成功获取日频数据 {sheet_name}")
+            # 处理日频数据
+            for sheet_name, info in config.DAILY_DATA_PAIRS.items():
+                print(f"\n正在分析日频数据 {sheet_name}...")
+                crawler_method = getattr(self, info['crawler'])
+                data = crawler_method(info['url'])
+                if data:
+                    results[sheet_name] = data
+                    print(f"成功获取日频数据 {sheet_name}")
 
             # 处理月度数据
             for sheet_name, info in config.MONTHLY_DATA_PAIRS.items():
