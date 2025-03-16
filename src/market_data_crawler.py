@@ -177,6 +177,16 @@ class MarketDataAnalyzer:
         else:  # Linux/macOS
             return dt.strftime("%Y/%-m/%d")
 
+    def format_us_interest_rate_date(self, raw_date):
+        # 解析中文月份
+        dt = datetime.strptime(raw_date, "%Y-%m-%d")
+
+        # 判断操作系统
+        if platform.system() == "Windows":
+            return dt.strftime("%Y/%#m/%d")
+        else:  # Linux/macOS
+            return dt.strftime("%Y/%-m/%d")
+
     def get_data_by_openai(self, url):
         """
         使用OpenAI分析市场数据URL并返回结构化数据
@@ -483,27 +493,27 @@ class MarketDataAnalyzer:
 
             #     results[pair] = data
 
-            # 处理日频数据
-            for sheet_name, info in config.DAILY_DATA_PAIRS.items():
-                print(f"\n正在分析日频数据 {sheet_name}...")
-                crawler_method = getattr(self, info['crawler'])
-                data = crawler_method(info['url'])
-                if data:
-                    results[sheet_name] = data
-                    print(f"成功获取日频数据 {sheet_name}")
-
-            # # 处理月度数据
-            # for sheet_name, info in config.MONTHLY_DATA_PAIRS.items():
-            #     print(f"\n正在分析月度数据 {sheet_name}...")
+            # # 处理日频数据
+            # for sheet_name, info in config.DAILY_DATA_PAIRS.items():
+            #     print(f"\n正在分析日频数据 {sheet_name}...")
             #     crawler_method = getattr(self, info['crawler'])
             #     data = crawler_method(info['url'])
             #     if data:
-            #         # 只保留第一行数据
-            #         if isinstance(data, list) and len(data) > 0:
-            #             results[sheet_name] = data[0]
-            #         else:
-            #             results[sheet_name] = data
-            #         print(f"成功获取月度数据 {sheet_name}")
+            #         results[sheet_name] = data
+            #         print(f"成功获取日频数据 {sheet_name}")
+
+            # 处理月度数据
+            for sheet_name, info in config.MONTHLY_DATA_PAIRS.items():
+                print(f"\n正在分析月度数据 {sheet_name}...")
+                crawler_method = getattr(self, info['crawler'])
+                data = crawler_method(info['url'])
+                if data:
+                    # 只保留第一行数据
+                    if isinstance(data, list) and len(data) > 0:
+                        results[sheet_name] = data[0]
+                    else:
+                        results[sheet_name] = data
+                    print(f"成功获取月度数据 {sheet_name}")
 
             # 加载现有Excel文件
             wb = load_workbook(config.EXCEL_OUTPUT_PATH)
@@ -920,11 +930,11 @@ class MarketDataAnalyzer:
                     "日期": cells[0].text.strip(),
                     "前值": cells[1].text.strip(),
                     "现值": cells[2].text.strip(),
-                    "发布日期": cells[3].text.strip(),
+                    "发布日期": self.format_us_interest_rate_date(cells[3].text.strip()),
                 }
                 result_list.append(record)
 
-            logger.info(f"成功抓取 US Interest Rate 数据: {len(result_list)} 条记录")
+            logger.info(f"成功抓取 US Interest Rate 数据: {result_list} 条记录")
             return result_list
 
         except Exception as e:
