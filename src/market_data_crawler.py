@@ -33,12 +33,58 @@ import concurrent.futures
 from urllib3.poolmanager import PoolManager
 import urllib3
 
-# 增加连接池大小
-urllib3.connection_from_url = lambda url, **kw: PoolManager(num_pools=10, maxsize=10, **kw).connection_from_url(url)
+# 禁用所有urllib3警告
+urllib3.disable_warnings()
+
+# 增加连接池大小和连接数
+class CustomPoolManager(PoolManager):
+    def __init__(self, **kwargs):
+        kwargs.setdefault('num_pools', 200)
+        kwargs.setdefault('maxsize', 200)
+        super().__init__(**kwargs)
+
+# 替换默认连接池管理器
+urllib3.PoolManager = CustomPoolManager
 
 # 设置日志
-logging.basicConfig(level=getattr(logging, config.LOG_LEVEL))
+logging.basicConfig(
+    level=getattr(logging, config.LOG_LEVEL),
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%H:%M:%S'
+)
 logger = logging.getLogger(__name__)
+
+# 创建一个统计对象来跟踪成功和失败的爬取
+class CrawlStats:
+    def __init__(self):
+        self.success = []
+        self.failed = []
+        self.skipped = []
+
+    def add_success(self, name):
+        self.success.append(name)
+
+    def add_failure(self, name, reason):
+        self.failed.append((name, reason))
+
+    def add_skipped(self, name, reason):
+        self.skipped.append((name, reason))
+
+    def print_summary(self):
+        print("\n===== 爬取统计摘要 =====")
+        print(f"成功: {len(self.success)} 项")
+        if self.success:
+            print(f"  {', '.join(self.success)}")
+
+        if self.failed:
+            print(f"\n失败: {len(self.failed)} 项")
+            for name, reason in self.failed:
+                print(f"  {name}: {reason}")
+
+        if self.skipped:
+            print(f"\n跳过: {len(self.skipped)} 项")
+            for name, reason in self.skipped:
+                print(f"  {name}: {reason}")
 
 def log_execution_time(func):
     def wrapper(*args, **kwargs):
@@ -46,7 +92,11 @@ def log_execution_time(func):
         result = func(*args, **kwargs)
         end_time = time.time()
         elapsed_time = end_time - start_time
-        logger.info(f"{func.__name__} 执行时间: {elapsed_time:.2f} 秒")
+        # 只在DEBUG级别记录执行时间，或者在失败时记录
+        if result is None:
+            logger.warning(f"{func.__name__} 执行失败，耗时: {elapsed_time:.2f} 秒")
+        else:
+            logger.debug(f"{func.__name__} 执行时间: {elapsed_time:.2f} 秒")
         return result
     return wrapper
 
@@ -60,14 +110,14 @@ def retry_on_timeout(func):
                 return func(*args, **kwargs)
             except TimeoutException:
                 retry_count += 1
-                logger.warning(f"第{retry_count}次尝试超时，正在重试...")
+                logger.warning(f"{func.__name__} 第{retry_count}次尝试超时，正在重试...")
                 if retry_count >= max_retries:
-                    logger.error(f"已达到最大重试次数({max_retries})，放弃尝试")
+                    logger.error(f"{func.__name__} 已达到最大重试次数({max_retries})，放弃尝试")
                     return None
                 # 每次重试增加等待时间
                 time.sleep(2 * retry_count)
             except Exception as e:
-                logger.error(f"发生非超时错误: {str(e)}")
+                logger.error(f"{func.__name__} 发生非超时错误: {str(e)}")
                 return None
     return wrapper
 
@@ -113,20 +163,25 @@ class MarketDataAnalyzer:
             options.add_argument('--disable-dev-shm-usage')
             options.add_argument(f'user-agent={UserAgent().random}')
 
+            # 增加连接池设置
+            options.add_argument('--proxy-server="direct://"')
+            options.add_argument('--proxy-bypass-list=*')
+
             # 设置页面加载策略为eager，加快加载速度
             options.page_load_strategy = 'eager'
 
             # 禁用图片加载，提高性能
             prefs = {
                 "profile.managed_default_content_settings.images": 2,
-                "profile.default_content_setting_values.notifications": 2
+                "profile.default_content_setting_values.notifications": 2,
+                "profile.default_content_settings.popups": 2
             }
             options.add_experimental_option("prefs", prefs)
 
             # 根据操作系统选择合适的驱动
             try:
                 # 首先尝试Chrome
-                driver_path = ChromeDriverManager().install()  # 移除 cache_valid_range 参数
+                driver_path = ChromeDriverManager().install()
                 service = Service(executable_path=driver_path)
                 MarketDataAnalyzer._driver = webdriver.Chrome(service=service, options=options)
                 logger.info("成功初始化 Chrome WebDriver")
@@ -140,7 +195,10 @@ class MarketDataAnalyzer:
                         edge_options.add_argument(arg)
                     edge_options.page_load_strategy = 'eager'
 
-                    driver_path = EdgeChromiumDriverManager().install()  # 移除 cache_valid_range 参数
+                    # 添加相同的性能优化设置
+                    edge_options.add_experimental_option("prefs", prefs)
+
+                    driver_path = EdgeChromiumDriverManager().install()
                     service = Service(executable_path=driver_path)
                     MarketDataAnalyzer._driver = webdriver.Edge(service=service, options=edge_options)
                     logger.info("成功初始化 Edge WebDriver")
@@ -155,7 +213,11 @@ class MarketDataAnalyzer:
                                 firefox_options.add_argument(arg)
                         firefox_options.page_load_strategy = 'eager'
 
-                        driver_path = GeckoDriverManager().install()  # 移除 cache_valid_range 参数
+                        # Firefox特有的性能设置
+                        firefox_options.set_preference("permissions.default.image", 2)
+                        firefox_options.set_preference("dom.popup_maximum", 0)
+
+                        driver_path = GeckoDriverManager().install()
                         service = Service(executable_path=driver_path)
                         MarketDataAnalyzer._driver = webdriver.Firefox(service=service, options=firefox_options)
                         logger.info("成功初始化 Firefox WebDriver")
@@ -310,7 +372,7 @@ class MarketDataAnalyzer:
             time.sleep(1 + random.random() * 2)  # 减少等待时间
 
             # 发送请求
-            logger.info(f"正在请求URL: {url}")
+            logger.debug(f"正在请求URL: {url}")
             response = requests.get(url, headers=headers, timeout=10)  # 减少超时时间
             response.raise_for_status()
 
@@ -320,7 +382,7 @@ class MarketDataAnalyzer:
             rows = soup.select('tr.historical-data-v2_price__atUfP')[:2]
 
             if len(rows) < 2:
-                logger.error("未找到足够的数据行，请检查HTML结构或反爬机制")
+                logger.error(f"汇率数据: 未找到足够的数据行，请检查HTML结构或反爬机制")
                 return None
 
             results = []
@@ -350,14 +412,14 @@ class MarketDataAnalyzer:
                     }
                 results.append(result)
 
-            logger.info(f"成功爬取数据: {results}")
+            logger.debug(f"成功爬取汇率数据: {len(results)} 条记录")
             return results
 
         except requests.RequestException as e:
-            logger.error(f"网络请求失败: {str(e)}")
+            logger.error(f"汇率数据请求失败: {str(e)}")
             return None
         except Exception as e:
-            logger.error(f"爬取过程出错: {str(e)}", exc_info=True)
+            logger.error(f"汇率数据处理异常: {str(e)}")
             return None
 
     def find_last_row(self, sheet):
@@ -418,16 +480,19 @@ class MarketDataAnalyzer:
             data: 包含数据的列表（通常有两行）
             last_row: 最后一行的行号
             sheet_name: 工作表名称
+
+        Returns:
+            bool: 是否更新了数据
         """
         if not data or len(data) < 2:
-            logger.error(f"{sheet_name} 数据不足，无法写入")
-            return
+            logger.error(f"{sheet_name}: 数据不足，无法写入")
+            return False
 
         new_date_str1 = data[0].get("日期", "")
         new_date_str2 = data[1].get("日期", "")
         if not new_date_str1 or not new_date_str2:
-            logger.error(f"{sheet_name} 数据中缺少日期字段，跳过")
-            return  # 这里需要 return，否则代码继续执行会导致错误
+            logger.error(f"{sheet_name}: 数据中缺少日期字段")
+            return False
 
         # 解析新日期
         try:
@@ -436,15 +501,14 @@ class MarketDataAnalyzer:
             year2, month2, day2 = map(int, new_date_str2.split('/'))
             new_date2 = datetime(year2, month2, day2)
         except Exception as e:
-            logger.error(f"解析新日期 '{new_date_str1}' 或 '{new_date_str2}' 失败: {str(e)}")
-            return  # 解析失败就退出，避免后续错误
+            logger.error(f"{sheet_name}: 解析新日期 '{new_date_str1}' 或 '{new_date_str2}' 失败: {str(e)}")
+            return False
 
         # **初始化 last_date**
         last_date = None
 
         # 获取最后一行的日期值
         last_date_value = worksheet.cell(row=last_row, column=1).value
-
 
         # 解析现有日期
         if isinstance(last_date_value, datetime):
@@ -462,27 +526,29 @@ class MarketDataAnalyzer:
                         year, month, day = map(int, str(last_date_value).split('/'))
                         last_date = datetime(year, month, day)
             except Exception as e:
-                logger.warning(f"解析现有日期 '{last_date_value}' 失败: {str(e)}")
+                logger.warning(f"{sheet_name}: 解析现有日期 '{last_date_value}' 失败: {str(e)}")
 
         # **确保 last_date 被正确初始化**
         if last_date is None:
-            logger.warning(f"未找到 {sheet_name} 的有效日期，跳过")
-            return  # 这里要 return，否则 last_date 仍然可能是 None
+            logger.warning(f"{sheet_name}: 未找到有效日期，跳过")
+            return False
 
         # **比较日期并决定写入策略**
         if new_date1.date() == last_date.date():
-            logger.info(f"{sheet_name} 数据已是最新，无需更新")
-            return
+            logger.debug(f"{sheet_name}: 数据已是最新，无需更新")
+            return False
         elif new_date2.date() == last_date.date():
             # 添加两行数据
             self.write_single_daily_row(worksheet, data[1], last_row, sheet_name)
             self.write_single_daily_row(worksheet, data[0], last_row + 1, sheet_name)
-            logger.info(f"已在 {sheet_name} 的第 {last_row} 和 {last_row+1} 行添加新数据")
+            logger.debug(f"{sheet_name}: 已添加两行新数据")
+            return True
         else:
             # 只需要添加第一行数据
             target_row = last_row + 1
             self.write_single_daily_row(worksheet, data[0], target_row, sheet_name)
-            logger.info(f"已在 {sheet_name} 的第 {target_row} 行添加新数据")
+            logger.debug(f"{sheet_name}: 已添加一行新数据")
+            return True
 
     def write_single_daily_row(self, worksheet, row_data, row_num, sheet_name):
         """
@@ -508,7 +574,6 @@ class MarketDataAnalyzer:
             columns = ['日期']
 
         # 写入数据
-           # 写入数据
         for col_idx, col_name in enumerate(columns, 1):
             value = row_data.get(col_name, '')
             if sheet_name == 'Shibor' and col_idx == 1:
@@ -539,81 +604,98 @@ class MarketDataAnalyzer:
         更新现有Excel文件，追加数据到对应sheet的最后一行（优化版）
         """
         MAX_RETRIES = 2  # 最大重试次数
+        stats = CrawlStats()  # 创建统计对象
+
         try:
             results = {}
 
-            # 处理汇率数据
-            for pair, url in config.CURRENCY_PAIRS.items():
-                print(f"\n正在分析 {pair} 的数据...")
-                data = {}
-                crawler_data = None
-                retries = 0
-                while retries < MAX_RETRIES:
-                    try:
-                        crawler_data = self.crawl_exchange_rate(url)
-                        if crawler_data:
-                            data = crawler_data
-                            print(f"成功获取 {pair} 的爬虫数据")
-                            break
-                    except requests.RequestException as e:
-                        logger.warning(f"第 {retries + 1} 次请求 {url} 失败: {str(e)}，正在重试...")
-                        retries += 1
-                        time.sleep(2)  # 等待2秒后重试
-
-                if not crawler_data:
-                    logger.error(f"多次尝试后仍无法获取 {pair} 的爬虫数据，跳过")
-
-                results[pair] = data
-
-            # 使用线程池并行处理日频数据爬取
-            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-                # 创建任务字典
+            # 1. 并行处理汇率数据（不需要WebDriver）
+            print("开始并行爬取汇率数据...")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=7) as executor:
                 future_to_sheet = {}
 
-                # 提交日频数据爬取任务
-                for sheet_name, info in config.DAILY_DATA_PAIRS.items():
-                    print(f"\n正在分析日频数据 {sheet_name}...")
-                    crawler_method = getattr(self, info['crawler'])
-                    future = executor.submit(crawler_method, info['url'])
-                    future_to_sheet[future] = sheet_name
+                for pair, url in config.CURRENCY_PAIRS.items():
+                    print(f"正在分析 {pair} 的数据...")
+                    future = executor.submit(self.crawl_exchange_rate, url)
+                    future_to_sheet[future] = pair
 
-                # 处理完成的任务
                 for future in concurrent.futures.as_completed(future_to_sheet):
                     sheet_name = future_to_sheet[future]
                     try:
                         data = future.result()
                         if data:
                             results[sheet_name] = data
-                            print(f"成功获取日频数据 {sheet_name}")
+                            stats.add_success(sheet_name)
+                            print(f"✓ 成功获取 {sheet_name} 数据")
                         else:
-                            logger.warning(f"获取 {sheet_name} 数据失败")
+                            stats.add_failure(sheet_name, "爬取返回空数据")
+                            logger.warning(f"{sheet_name}: 爬取返回空数据")
                     except Exception as e:
-                        logger.error(f"处理 {sheet_name} 数据时出错: {str(e)}")
+                        stats.add_failure(sheet_name, str(e))
+                        logger.error(f"{sheet_name}: 处理数据时出错: {str(e)}")
 
-            # 处理月度数据
-            for sheet_name, info in config.MONTHLY_DATA_PAIRS.items():
-                print(f"\n正在分析月度数据 {sheet_name}...")
-                crawler_method = getattr(self, info['crawler'])
-                data = crawler_method(info['url'])
-                if data:
-                    # 只保留第一行数据
-                    if isinstance(data, list) and len(data) > 0:
-                        results[sheet_name] = data[0]
-                    else:
+            # 2. 顺序处理日频数据（需要WebDriver）
+            print("\n开始爬取日频数据...")
+            for sheet_name, info in config.DAILY_DATA_PAIRS.items():
+                print(f"正在分析日频数据 {sheet_name}...")
+                try:
+                    # 确保WebDriver已初始化
+                    self._init_driver()
+
+                    # 调用对应的爬虫方法
+                    crawler_method = getattr(self, info['crawler'])
+                    data = crawler_method(info['url'])
+
+                    if data:
                         results[sheet_name] = data
-                    print(f"成功获取月度数据 {sheet_name}")
+                        stats.add_success(sheet_name)
+                        print(f"✓ 成功获取 {sheet_name} 数据")
+                    else:
+                        stats.add_failure(sheet_name, "爬取返回空数据")
+                        logger.warning(f"{sheet_name}: 爬取返回空数据")
+                except Exception as e:
+                    stats.add_failure(sheet_name, str(e))
+                    logger.error(f"{sheet_name}: 处理数据时出错: {str(e)}")
 
-            # 加载现有Excel文件
+            # 3. 顺序处理月度数据（需要WebDriver）
+            print("\n开始爬取月度数据...")
+            for sheet_name, info in config.MONTHLY_DATA_PAIRS.items():
+                print(f"正在分析月度数据 {sheet_name}...")
+                try:
+                    # 确保WebDriver已初始化
+                    self._init_driver()
+
+                    # 调用对应的爬虫方法
+                    crawler_method = getattr(self, info['crawler'])
+                    data = crawler_method(info['url'])
+
+                    if data:
+                        # 对于月度数据，只保留第一行
+                        if isinstance(data, list) and len(data) > 0:
+                            results[sheet_name] = data[0]
+                        else:
+                            results[sheet_name] = data
+                        stats.add_success(sheet_name)
+                        print(f"✓ 成功获取 {sheet_name} 数据")
+                    else:
+                        stats.add_failure(sheet_name, "爬取返回空数据")
+                        logger.warning(f"{sheet_name}: 爬取返回空数据")
+                except Exception as e:
+                    stats.add_failure(sheet_name, str(e))
+                    logger.error(f"{sheet_name}: 处理数据时出错: {str(e)}")
+
+            # 4. 更新Excel文件
             wb = load_workbook(config.EXCEL_OUTPUT_PATH)
 
             # 更新各个sheet
+            excel_updates = []
             for sheet_name, data in results.items():
                 if not data:
-                    logger.warning(f"{sheet_name} 数据为空，跳过...")
+                    stats.add_skipped(sheet_name, "数据为空")
                     continue
 
                 if sheet_name not in wb.sheetnames:
-                    logger.warning(f"工作表 {sheet_name} 不存在，跳过...")
+                    stats.add_skipped(sheet_name, "工作表不存在")
                     continue
 
                 ws = wb[sheet_name]
@@ -626,7 +708,7 @@ class MarketDataAnalyzer:
                     # 月度数据处理
                     new_date = data.get("日期", "")
                     if not new_date:
-                        logger.error(f"{sheet_name} 数据中缺少日期字段，跳过")
+                        stats.add_skipped(sheet_name, "数据中缺少日期字段")
                         continue
 
                     # 获取最后一行的日期值
@@ -635,15 +717,27 @@ class MarketDataAnalyzer:
                     # 比较日期，如果不同则更新
                     if str(last_date_value) != str(new_date):
                         self.write_monthly_data(ws, data, last_row + 1)
+                        excel_updates.append(sheet_name)
                     else:
-                        logger.info(f"{sheet_name} 数据已是最新，无需更新")
+                        logger.debug(f"{sheet_name}: 数据已是最新，无需更新")
                 else:
                     # 日频数据处理（包括汇率数据）
-                    self.write_daily_data(ws, data, last_row, sheet_name)
+                    update_result = self.write_daily_data(ws, data, last_row, sheet_name)
+                    if update_result:
+                        excel_updates.append(sheet_name)
 
             # 保存Excel文件
             wb.save(config.EXCEL_OUTPUT_PATH)
+
+            if excel_updates:
+                print(f"\n已更新以下工作表: {', '.join(excel_updates)}")
+            else:
+                print("\n所有数据均已是最新，无需更新Excel")
+
             logger.info(f"数据已成功保存到 {config.EXCEL_OUTPUT_PATH}")
+
+            # 打印统计摘要
+            stats.print_summary()
 
             return results
 
@@ -659,7 +753,7 @@ class MarketDataAnalyzer:
         """
         爬取钢铁价格数据（优化版）
         """
-        logger.info(f"正在请求URL: {url}")
+        logger.debug(f"正在请求URL: {url}")
         driver = self.get_driver()
 
         try:
@@ -696,7 +790,7 @@ class MarketDataAnalyzer:
 
                     # 过滤无效行
                     if len(cells) < 10:
-                        logger.warning(f"跳过无效行，列数：{len(cells)}")
+                        logger.debug(f"Steel price: 跳过无效行，列数：{len(cells)}")
                         continue
 
                     # 立即提取文本内容
@@ -718,20 +812,20 @@ class MarketDataAnalyzer:
                     data.append(item)
 
                 except StaleElementReferenceException:
-                    logger.warning("检测到元素过期，重新获取表格数据...")
+                    logger.debug("Steel price: 检测到元素过期，重新获取表格数据...")
                     # 重新获取表格和行
                     table = driver.find_element(By.XPATH, '//table[contains(@class,"detailTab")]')
                     rows = table.find_elements(By.XPATH, './/tbody/tr[position()<=2]')
                     continue
 
-            logger.info(f"成功抓取 Steel price 数据: {len(data)} 条记录")
+            logger.debug(f"成功抓取 Steel price 数据: {len(data)} 条记录")
             return data
 
         except TimeoutException:
-            logger.error("页面加载超时，请检查网络连接或URL是否正确")
+            logger.error("Steel price: 页面加载超时，请检查网络连接或URL是否正确")
             return None
         except Exception as e:
-            logger.error(f"爬取钢铁价格数据失败: {str(e)}", exc_info=True)
+            logger.error(f"Steel price: 爬取数据失败: {str(e)}")
             return None
 
     @log_execution_time
@@ -740,7 +834,7 @@ class MarketDataAnalyzer:
         爬取Shibor利率数据（优化版）
         """
         driver = self.get_driver()
-        logger.info(f"正在请求URL: {url}")
+        logger.debug(f"正在请求URL: {url}")
 
         try:
             # 设置页面加载超时
@@ -774,14 +868,14 @@ class MarketDataAnalyzer:
                 result_list.append(current_record)
                 row_count += 1
 
-            logger.info(f"成功抓取 Shibor 数据: {result_list}")
+            logger.debug(f"成功抓取 Shibor 数据: {len(result_list)} 条记录")
             return result_list
 
         except TimeoutException:
-            logger.error("页面加载超时，请检查网络连接或URL是否正确")
+            logger.error("Shibor: 页面加载超时，请检查网络连接或URL是否正确")
             return None
         except Exception as e:
-            logger.error(f"数据抓取失败: {str(e)}")
+            logger.error(f"Shibor: 数据抓取失败: {str(e)}")
             return None
 
     @log_execution_time
@@ -790,7 +884,7 @@ class MarketDataAnalyzer:
         爬取LPR数据（优化版）
         """
         driver = self.get_driver()
-        logger.info(f"正在请求URL: {url}")
+        logger.debug(f"正在请求URL: {url}")
 
         try:
             # 设置页面加载超时
@@ -832,14 +926,14 @@ class MarketDataAnalyzer:
                 result_list.append(current_record)
                 row_index += 1
 
-            logger.info(f"成功抓取 LPR 数据: {result_list}")
+            logger.debug(f"成功抓取 LPR 数据: {len(result_list)} 条记录")
             return result_list
 
         except TimeoutException:
-            logger.error("页面加载超时，请检查网络连接或URL是否正确")
+            logger.error("LPR: 页面加载超时，请检查网络连接或URL是否正确")
             return None
         except Exception as e:
-            logger.error(f"数据抓取失败: {str(e)}")
+            logger.error(f"LPR: 数据抓取失败: {str(e)}")
             return None
 
     @log_execution_time
@@ -848,7 +942,7 @@ class MarketDataAnalyzer:
         爬取SOFR数据（优化版）
         """
         driver = self.get_driver()
-        logger.info(f"正在请求URL: {url}")
+        logger.debug(f"正在请求URL: {url}")
 
         try:
             # 设置页面加载超时
@@ -869,7 +963,7 @@ class MarketDataAnalyzer:
 
                 # 确保列数足够
                 if len(cells) < 7:
-                    logger.warning(f"检测到不完整行，实际列数：{len(cells)}")
+                    logger.debug(f"SOFR: 检测到不完整行，实际列数：{len(cells)}")
                     continue
 
                 # 按顺序提取字段
@@ -885,14 +979,14 @@ class MarketDataAnalyzer:
                 }
                 result_list.append(record)
 
-            logger.info(f"成功抓取 SOFR 数据: {len(result_list)} 条记录")
+            logger.debug(f"成功抓取 SOFR 数据: {len(result_list)} 条记录")
             return result_list
 
         except TimeoutException:
-            logger.error("页面加载超时，请检查网络连接或URL是否正确")
+            logger.error("SOFR: 页面加载超时，请检查网络连接或URL是否正确")
             return None
         except Exception as e:
-            logger.error(f"数据抓取失败: {str(e)}", exc_info=True)
+            logger.error(f"SOFR: 数据抓取失败: {str(e)}")
             return None
 
     @log_execution_time
@@ -901,7 +995,7 @@ class MarketDataAnalyzer:
         爬取ESTER数据（优化版）
         """
         driver = self.get_driver()
-        logger.info(f"正在请求URL: {url}")
+        logger.debug(f"正在请求URL: {url}")
 
         try:
             # 设置页面加载超时
@@ -914,14 +1008,14 @@ class MarketDataAnalyzer:
             # 使用更精确的选择器
             tables = wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "table.table-striped")))
             if not tables:
-                logger.error("未找到目标表格")
+                logger.error("ESTER: 未找到目标表格")
                 return None
 
             table = tables[0]  # 取第一个表格
 
             # 获取有效数据行（跳过表头）
             rows = table.find_elements(By.CSS_SELECTOR, "tr:has(td)")
-            logger.info(f"找到数据行数：{len(rows)}")
+            logger.debug(f"ESTER: 找到数据行数：{len(rows)}")
 
             result_list = []
 
@@ -931,7 +1025,7 @@ class MarketDataAnalyzer:
 
                 # 验证数据完整性
                 if len(cells) != 2:
-                    logger.warning(f"异常行数据，跳过。实际列数：{len(cells)}")
+                    logger.debug(f"ESTER: 异常行数据，跳过。实际列数：{len(cells)}")
                     continue
 
                 # 创建格式化记录
@@ -941,14 +1035,14 @@ class MarketDataAnalyzer:
                 }
                 result_list.append(record)
 
-            logger.info(f"成功抓取 ESTER 数据: {len(result_list)} 条记录")
+            logger.debug(f"成功抓取 ESTER 数据: {len(result_list)} 条记录")
             return result_list
 
         except TimeoutException:
-            logger.error("页面加载超时，请检查网络连接或URL是否正确")
+            logger.error("ESTER: 页面加载超时，请检查网络连接或URL是否正确")
             return None
         except Exception as e:
-            logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
+            logger.error(f"ESTER: 数据抓取异常: {str(e)}")
             return None
 
     @log_execution_time
@@ -957,7 +1051,7 @@ class MarketDataAnalyzer:
         爬取JPY利率数据（优化版）
         """
         driver = self.get_driver()
-        logger.info(f"正在请求URL: {url}")
+        logger.debug(f"正在请求URL: {url}")
 
         try:
             # 设置页面加载超时
@@ -980,7 +1074,7 @@ class MarketDataAnalyzer:
 
                 # 验证数据完整性
                 if len(cells) != 2:
-                    logger.warning(f"异常行数据，跳过。实际列数：{len(cells)}")
+                    logger.debug(f"JPY rate: 异常行数据，跳过。实际列数：{len(cells)}")
                     continue
 
                 # 创建格式化记录
@@ -990,14 +1084,14 @@ class MarketDataAnalyzer:
                 }
                 result_list.append(record)
 
-            logger.info(f"成功抓取 JPY rate 数据: {len(result_list)} 条记录")
+            logger.debug(f"成功抓取 JPY rate 数据: {len(result_list)} 条记录")
             return result_list
 
         except TimeoutException:
-            logger.error("页面加载超时，请检查网络连接或URL是否正确")
+            logger.error("JPY rate: 页面加载超时，请检查网络连接或URL是否正确")
             return None
         except Exception as e:
-            logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
+            logger.error(f"JPY rate: 数据抓取异常: {str(e)}")
             return None
 
     @log_execution_time
@@ -1007,7 +1101,7 @@ class MarketDataAnalyzer:
         爬取美国利率数据
         """
         driver = self.get_driver()
-        logger.info(f"正在请求URL: {url}")
+        logger.debug(f"正在请求URL: {url}")
 
         try:
             # 设置页面加载超时
@@ -1028,7 +1122,7 @@ class MarketDataAnalyzer:
 
                 # 验证数据完整性
                 if len(cells) != 4:
-                    logger.warning(f"异常行数据，跳过。实际列数：{len(cells)}")
+                    logger.debug(f"US Interest Rate: 异常行数据，跳过。实际列数：{len(cells)}")
                     continue
 
                 # 创建格式化记录
@@ -1040,14 +1134,14 @@ class MarketDataAnalyzer:
                 }
                 result_list.append(record)
 
-            logger.info(f"成功抓取 US Interest Rate 数据: {len(result_list)} 条记录")
+            logger.debug(f"成功抓取 US Interest Rate 数据: {len(result_list)} 条记录")
             return result_list
 
         except TimeoutException:
-            logger.error("页面加载超时，请检查网络连接或URL是否正确")
+            logger.error("US Interest Rate: 页面加载超时，请检查网络连接或URL是否正确")
             return None
         except Exception as e:
-            logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
+            logger.error(f"US Interest Rate: 数据抓取异常: {str(e)}")
             return None
 
     @log_execution_time
@@ -1057,7 +1151,7 @@ class MarketDataAnalyzer:
         爬取进出口贸易数据
         """
         driver = self.get_driver()
-        logger.info(f"正在请求URL: {url}")
+        logger.debug(f"正在请求URL: {url}")
 
         try:
             # 设置页面加载超时
@@ -1078,7 +1172,7 @@ class MarketDataAnalyzer:
 
                 # 验证数据完整性
                 if len(cells) != 11:
-                    logger.warning(f"异常行数据，跳过。实际列数：{len(cells)}")
+                    logger.debug(f"Import Export: 异常行数据，跳过。实际列数：{len(cells)}")
                     continue
 
                 # 创建格式化记录
@@ -1097,14 +1191,14 @@ class MarketDataAnalyzer:
                 }
                 result_list.append(record)
 
-            logger.info(f"成功抓取 Import and Export 数据: {len(result_list)} 条记录")
+            logger.debug(f"成功抓取 Import and Export 数据: {len(result_list)} 条记录")
             return result_list
 
         except TimeoutException:
-            logger.error("页面加载超时，请检查网络连接或URL是否正确")
+            logger.error("Import Export: 页面加载超时，请检查网络连接或URL是否正确")
             return None
         except Exception as e:
-            logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
+            logger.error(f"Import Export: 数据抓取异常: {str(e)}")
             return None
 
     @log_execution_time
@@ -1114,7 +1208,7 @@ class MarketDataAnalyzer:
         爬取货币供应数据
         """
         driver = self.get_driver()
-        logger.info(f"正在请求URL: {url}")
+        logger.debug(f"正在请求URL: {url}")
 
         try:
             # 设置页面加载超时
@@ -1135,7 +1229,7 @@ class MarketDataAnalyzer:
 
                 # 验证数据完整性
                 if len(cells) != 10:
-                    logger.warning(f"异常行数据，跳过。实际列数：{len(cells)}")
+                    logger.debug(f"Money Supply: 异常行数据，跳过。实际列数：{len(cells)}")
                     continue
 
                 # 创建格式化记录
@@ -1153,14 +1247,14 @@ class MarketDataAnalyzer:
                 }
                 result_list.append(record)
 
-            logger.info(f"成功抓取 Money Supply 数据: {len(result_list)} 条记录")
+            logger.debug(f"成功抓取 Money Supply 数据: {len(result_list)} 条记录")
             return result_list
 
         except TimeoutException:
-            logger.error("页面加载超时，请检查网络连接或URL是否正确")
+            logger.error("Money Supply: 页面加载超时，请检查网络连接或URL是否正确")
             return None
         except Exception as e:
-            logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
+            logger.error(f"Money Supply: 数据抓取异常: {str(e)}")
             return None
 
     @log_execution_time
@@ -1170,7 +1264,7 @@ class MarketDataAnalyzer:
         爬取ppi数据
         """
         driver = self.get_driver()
-        logger.info(f"正在请求URL: {url}")
+        logger.debug(f"正在请求URL: {url}")
 
         try:
             # 设置页面加载超时
@@ -1191,7 +1285,7 @@ class MarketDataAnalyzer:
 
                 # 验证数据完整性
                 if len(cells) != 4:
-                    logger.warning(f"异常行数据，跳过。实际列数：{len(cells)}")
+                    logger.debug(f"PPI: 异常行数据，跳过。实际列数：{len(cells)}")
                     continue
 
                 # 创建格式化记录
@@ -1203,14 +1297,14 @@ class MarketDataAnalyzer:
                 }
                 result_list.append(record)
 
-            logger.info(f"成功抓取 PPI 数据: {len(result_list)} 条记录")
+            logger.debug(f"成功抓取 PPI 数据: {len(result_list)} 条记录")
             return result_list
 
         except TimeoutException:
-            logger.error("页面加载超时，请检查网络连接或URL是否正确")
+            logger.error("PPI: 页面加载超时，请检查网络连接或URL是否正确")
             return None
         except Exception as e:
-            logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
+            logger.error(f"PPI: 数据抓取异常: {str(e)}")
             return None
 
     @log_execution_time
@@ -1220,7 +1314,7 @@ class MarketDataAnalyzer:
         爬取cpi数据
         """
         driver = self.get_driver()
-        logger.info(f"正在请求URL: {url}")
+        logger.debug(f"正在请求URL: {url}")
 
         try:
             # 设置页面加载超时
@@ -1241,7 +1335,7 @@ class MarketDataAnalyzer:
 
                 # 验证数据完整性
                 if len(cells) != 13:
-                    logger.warning(f"异常行数据，跳过。实际列数：{len(cells)}")
+                    logger.debug(f"CPI: 异常行数据，跳过。实际列数：{len(cells)}")
                     continue
 
                 # 创建格式化记录
@@ -1262,14 +1356,14 @@ class MarketDataAnalyzer:
                 }
                 result_list.append(record)
 
-            logger.info(f"成功抓取 CPI 数据: {len(result_list)} 条记录")
+            logger.debug(f"成功抓取 CPI 数据: {len(result_list)} 条记录")
             return result_list
 
         except TimeoutException:
-            logger.error("页面加载超时，请检查网络连接或URL是否正确")
+            logger.error("CPI: 页面加载超时，请检查网络连接或URL是否正确")
             return None
         except Exception as e:
-            logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
+            logger.error(f"CPI: 数据抓取异常: {str(e)}")
             return None
 
     @log_execution_time
@@ -1279,7 +1373,7 @@ class MarketDataAnalyzer:
         爬取pmi数据
         """
         driver = self.get_driver()
-        logger.info(f"正在请求URL: {url}")
+        logger.debug(f"正在请求URL: {url}")
 
         try:
             # 设置页面加载超时
@@ -1300,7 +1394,7 @@ class MarketDataAnalyzer:
 
                 # 验证数据完整性
                 if len(cells) != 5:
-                    logger.warning(f"异常行数据，跳过。实际列数：{len(cells)}")
+                    logger.debug(f"PMI: 异常行数据，跳过。实际列数：{len(cells)}")
                     continue
 
                 # 创建格式化记录
@@ -1313,14 +1407,14 @@ class MarketDataAnalyzer:
                 }
                 result_list.append(record)
 
-            logger.info(f"成功抓取 PMI 数据: {len(result_list)} 条记录")
+            logger.debug(f"成功抓取 PMI 数据: {len(result_list)} 条记录")
             return result_list
 
         except TimeoutException:
-            logger.error("页面加载超时，请检查网络连接或URL是否正确")
+            logger.error("PMI: 页面加载超时，请检查网络连接或URL是否正确")
             return None
         except Exception as e:
-            logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
+            logger.error(f"PMI: 数据抓取异常: {str(e)}")
             return None
 
     @log_execution_time
@@ -1330,7 +1424,7 @@ class MarketDataAnalyzer:
         爬取 中国 新增信贷数据
         """
         driver = self.get_driver()
-        logger.info(f"正在请求URL: {url}")
+        logger.debug(f"正在请求URL: {url}")
 
         try:
             # 设置页面加载超时
@@ -1351,7 +1445,7 @@ class MarketDataAnalyzer:
 
                 # 验证数据完整性
                 if len(cells) != 6:
-                    logger.warning(f"异常行数据，跳过。实际列数：{len(cells)}")
+                    logger.debug(f"New Bank Loan: 异常行数据，跳过。实际列数：{len(cells)}")
                     continue
 
                 # 创建格式化记录 - 修复字段名称，避免重复的"同比增长"
@@ -1365,20 +1459,50 @@ class MarketDataAnalyzer:
                 }
                 result_list.append(record)
 
-            logger.info(f"成功抓取 New Bank Loan Addition 数据: {len(result_list)} 条记录")
+            logger.debug(f"成功抓取 New Bank Loan Addition 数据: {len(result_list)} 条记录")
             return result_list
 
         except TimeoutException:
-            logger.error("页面加载超时，请检查网络连接或URL是否正确")
+            logger.error("New Bank Loan: 页面加载超时，请检查网络连接或URL是否正确")
             return None
         except Exception as e:
-            logger.error(f"数据抓取异常: {str(e)}", exc_info=True)
+            logger.error(f"New Bank Loan: 数据抓取异常: {str(e)}")
             return None
 
 if __name__ == "__main__":
     # 初始化分析器
     analyzer = MarketDataAnalyzer()
-    print("更新所有数据...")
-    analyzer.update_excel()
-    # analyzer.crawl_cpi('https://data.eastmoney.com/cjsj/cpi.html')
-    print("\n程序运行结束")
+    print("=" * 50)
+    print("市场数据爬取工具")
+    print("=" * 50)
+
+    try:
+        # 设置日志级别
+        import sys
+        if len(sys.argv) > 1 and sys.argv[1] == "--debug":
+            logger.setLevel(logging.DEBUG)
+            print("已启用调试模式，将显示详细日志")
+        else:
+            # 默认使用INFO级别，减少日志输出
+            logger.setLevel(logging.INFO)
+            print("使用标准日志级别。使用 --debug 参数可查看详细日志")
+
+        print("\n开始更新市场数据...")
+        results = analyzer.update_excel()
+
+        if results:
+            print("\n程序运行完成")
+        else:
+            print("\n程序运行完成，但未能成功更新数据")
+
+    except KeyboardInterrupt:
+        print("\n用户中断，程序退出")
+    except Exception as e:
+        print(f"\n程序运行出错: {str(e)}")
+        logger.error(f"程序运行出错: {str(e)}", exc_info=True)
+    finally:
+        # 确保关闭WebDriver
+        try:
+            analyzer.close_driver()
+        except:
+            pass
