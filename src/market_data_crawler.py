@@ -99,9 +99,19 @@ class MarketDataAnalyzer:
             self._driver.quit()
             self.__class__._driver = None
 
-    def format_cn_date(self,raw_date):
+    def format_exchange_rate_date(self,raw_date):
         # 解析中文月份
         dt = datetime.strptime(raw_date, "%m月 %d, %Y")
+
+        # 判断操作系统
+        if platform.system() == "Windows":
+            return dt.strftime("%Y/%#m/%d")
+        else:  # Linux/macOS
+            return dt.strftime("%Y/%-m/%d")
+
+    def format_shibor_rate_date(self,raw_date):
+        # 解析中文月份
+        dt = datetime.strptime(raw_date, "%Y-%m-%d")
 
         # 判断操作系统
         if platform.system() == "Windows":
@@ -186,7 +196,7 @@ class MarketDataAnalyzer:
                 if url == 'https://cn.investing.com/rates-bonds/u.s.-10-year-bond-yield-historical-data':
                     # 10年期美债数据
                     result = {
-                        "日期": self.format_cn_date(date),
+                        "日期": self.format_exchange_rate_date(date),
                         "收盘": cells[1].text.strip(),
                         "开盘": cells[2].text.strip(),
                         "高": cells[3].text.strip(),
@@ -196,7 +206,7 @@ class MarketDataAnalyzer:
                 else:
                     # 构造返回结果
                     result = {
-                        "日期": self.format_cn_date(date),
+                        "日期": self.format_exchange_rate_date(date),
                         "收盘": cells[1].text.strip(),
                         "开盘": cells[2].text.strip(),
                         "高": cells[3].text.strip(),
@@ -287,6 +297,8 @@ class MarketDataAnalyzer:
         # 获取最后一行的日期值
         last_date_value = worksheet.cell(row=last_row, column=1).value
 
+        print('last_date_value:', last_date_value)
+
         # 解析现有日期
         if isinstance(last_date_value, datetime):
             last_date = last_date_value
@@ -319,7 +331,6 @@ class MarketDataAnalyzer:
             self.write_single_daily_row(worksheet, data[0], target_row, sheet_name)
             logger.info(f"已在 {sheet_name} 的第 {target_row} 行添加新数据")
 
-
     def write_single_daily_row(self, worksheet, row_data, row_num, sheet_name):
         """
         写入单行日频数据
@@ -344,10 +355,19 @@ class MarketDataAnalyzer:
             columns = ['日期']
 
         # 写入数据
+           # 写入数据
         for col_idx, col_name in enumerate(columns, 1):
             value = row_data.get(col_name, '')
+            if sheet_name == 'Shibor' and col_idx == 1:
+                value_dt = datetime.strptime(value, '%Y/%m/%d')
+                if isinstance(value_dt, datetime):
+                    value = value_dt.strftime('%Y-%m-%d')
+                    print('value:', value)
             cell = worksheet.cell(row=row_num, column=col_idx, value=value)
-            cell.alignment = Alignment(horizontal='right')
+            if sheet_name == 'Shibor':
+                cell.alignment = Alignment(horizontal='left')
+            else:
+                cell.alignment = Alignment(horizontal='right')
 
     def update_excel(self, method='both'):
         """
@@ -360,44 +380,44 @@ class MarketDataAnalyzer:
         try:
             results = {}
 
-            # 处理汇率数据（原有逻辑）
-            for pair, url in config.CURRENCY_PAIRS.items():
-                print(f"\n正在分析 {pair} 的数据...")
-                data = {}
-                if method in ['crawler', 'both']:
-                    crawler_data = None
-                    retries = 0
-                    while retries < MAX_RETRIES:
-                        try:
-                            crawler_data = self.crawl_exchange_rate(url)
-                            if crawler_data:
-                                data = crawler_data
-                                print(f"成功获取 {pair} 的爬虫数据")
-                                break
-                        except requests.RequestException as e:
-                            logger.warning(f"第 {retries + 1} 次请求 {url} 失败: {str(e)}，正在重试...")
-                            retries += 1
-                            time.sleep(2)  # 等待2秒后重试
+            # # 处理汇率数据（原有逻辑）
+            # for pair, url in config.CURRENCY_PAIRS.items():
+            #     print(f"\n正在分析 {pair} 的数据...")
+            #     data = {}
+            #     if method in ['crawler', 'both']:
+            #         crawler_data = None
+            #         retries = 0
+            #         while retries < MAX_RETRIES:
+            #             try:
+            #                 crawler_data = self.crawl_exchange_rate(url)
+            #                 if crawler_data:
+            #                     data = crawler_data
+            #                     print(f"成功获取 {pair} 的爬虫数据")
+            #                     break
+            #             except requests.RequestException as e:
+            #                 logger.warning(f"第 {retries + 1} 次请求 {url} 失败: {str(e)}，正在重试...")
+            #                 retries += 1
+            #                 time.sleep(2)  # 等待2秒后重试
 
-                    if not crawler_data:
-                        logger.error(f"多次尝试后仍无法获取 {pair} 的爬虫数据，跳过")
+            #         if not crawler_data:
+            #             logger.error(f"多次尝试后仍无法获取 {pair} 的爬虫数据，跳过")
 
-                if method in ['openai', 'both']:
-                    openai_data = self.get_data_by_openai(url)
-                    if openai_data:
-                        data['openai_analysis'] = openai_data['analysis']
-                        print(f"成功获取 {pair} 的OpenAI分析数据")
+            #     if method in ['openai', 'both']:
+            #         openai_data = self.get_data_by_openai(url)
+            #         if openai_data:
+            #             data['openai_analysis'] = openai_data['analysis']
+            #             print(f"成功获取 {pair} 的OpenAI分析数据")
 
-                results[pair] = data
+            #     results[pair] = data
 
-            # # 处理日频数据
-            # for sheet_name, info in config.DAILY_DATA_PAIRS.items():
-            #     print(f"\n正在分析日频数据 {sheet_name}...")
-            #     crawler_method = getattr(self, info['crawler'])
-            #     data = crawler_method(info['url'])
-            #     if data:
-            #         results[sheet_name] = data
-            #         print(f"成功获取日频数据 {sheet_name}")
+            # 处理日频数据
+            for sheet_name, info in config.DAILY_DATA_PAIRS.items():
+                print(f"\n正在分析日频数据 {sheet_name}...")
+                crawler_method = getattr(self, info['crawler'])
+                data = crawler_method(info['url'])
+                if data:
+                    results[sheet_name] = data
+                    print(f"成功获取日频数据 {sheet_name}")
 
             # # 处理月度数据
             # for sheet_name, info in config.MONTHLY_DATA_PAIRS.items():
@@ -546,38 +566,31 @@ class MarketDataAnalyzer:
         try:
             time.sleep(3)  # 等待页面加载
             # 新式定位方法（Selenium 4.x+语法）
-            table = driver.find_element(By.ID, 'shiborData')
-
-            # 提取关键数据
-            date_str = driver.find_element(By.ID, "home-shibor-date")\
-                        .text.strip()\
-                        .replace("\xa0", " ")
+            table = driver.find_element(By.ID, 'shibor-tendays-show-data')
 
             # 初始化结果数组
             result_list = []
 
-            # 处理数据表格
-            current_record = {"日期": date_str}
+            row_count = 0  # 行计数
 
-            for row in table.find_elements(By.CSS_SELECTOR, "tr:has(td)"):  # 只处理有td的行
+            for row in table.find_elements(By.CSS_SELECTOR, "tr:has(td)"):
+                if row_count >= 2:
+                    break  # 只取前两行数据
+
                 cells = row.find_elements(By.TAG_NAME, "td")
-                if len(cells) < 3:
+                if len(cells) < 9:
                     continue
 
-                term = cells[1].text.strip()
-                rate = cells[2].text.strip()
+                # 解析数据
+                current_record = {}
+                current_record['日期'] = self.format_shibor_rate_date(cells[0].text.strip())
+                terms = ['O/N', '1W', '2W', '1M', '3M', '6M', '9M', '1Y']
 
-                # 只收集目标期限类型
-                if term in ['O/N', '1W', '2W', '1M', '3M', '6M', '9M', '1Y']:
-                    current_record[term] = rate
+                for i, term in enumerate(terms):
+                    current_record[term] = cells[i + 1].text.strip()
 
-            # 验证数据完整性后添加到数组
-            if len(current_record) >= 9:  # 日期+8个期限
                 result_list.append(current_record)
-                # 为了满足两行数据的要求，复制一份
-                result_list.append(current_record.copy())
-            else:
-                print("数据不完整，已丢弃当前记录")
+                row_count += 1
 
             logger.info(f"成功抓取 Shibor 数据: {result_list}")
             return result_list

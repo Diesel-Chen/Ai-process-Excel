@@ -84,7 +84,7 @@ COLUMN_DEFINITIONS = {
     'CURRENCY': ['日期', '收盘', '开盘', '高', '低', '涨跌幅'],
 
     # 日频数据列定义
-    'Steel price': ['时间', '本日', '昨日', '日环比', '上周', '周环比', '上月度', '与上月比', '去年同期', '与去年比'],
+    'Steel price': ['日期', '本日', '昨日', '日环比', '上周', '周环比', '上月度', '与上月比', '去年同期', '与去年比'],
     'Shibor': ['日期', 'O/N', '1W', '2W', '1M', '3M', '6M', '9M', '1Y'],
     'LPR': ['日期', '1Y', '5Y'],
     'SOFR': ['日期', 'RATE(%)', '1ST PERCENTILE(%)', '25TH PERCENTILE(%)', '75TH PERCENTILE(%)', '99TH PERCENTILE(%)', 'VOLUME ($Billions)'],
