@@ -333,6 +333,8 @@ class MarketDataAnalyzer:
                 cell.alignment = Alignment(horizontal='left')
             elif sheet_name == 'CPI' and col_idx == 1:
                 cell.alignment = Alignment(horizontal='left')
+            elif sheet_name == 'PMI' and col_idx == 1:
+                cell.alignment = Alignment(horizontal='left')
             else:
                 cell.alignment = Alignment(horizontal='right')
 
@@ -1216,7 +1218,7 @@ class MarketDataAnalyzer:
                 }
                 result_list.append(record)
 
-            logger.info(f"成功抓取 PMI 数据: {len(result_list)} 条记录")
+            logger.info(f"成功抓取 PMI 数据: {result_list} ")
             return result_list
 
         except Exception as e:
