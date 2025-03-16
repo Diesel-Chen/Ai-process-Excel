@@ -147,6 +147,17 @@ class MarketDataAnalyzer:
             print(f"日期解析失败，输入的日期 {raw_date} 格式可能不正确。")
             return None
 
+    def format_ester_date(self, raw_date):
+        # 解析中文月份
+        dt = datetime.strptime(raw_date, "%m/%d/%Y")
+
+        # 判断操作系统
+        if platform.system() == "Windows":
+            return dt.strftime("%Y/%#m/%d")
+        else:  # Linux/macOS
+            return dt.strftime("%Y/%-m/%d")
+
+
     def get_data_by_openai(self, url):
         """
         使用OpenAI分析市场数据URL并返回结构化数据
@@ -764,17 +775,19 @@ class MarketDataAnalyzer:
         logger.info(f"正在请求URL: {url}")
 
         try:
-            time.sleep(3)
-            # 定位第一个表格（两种方式任选其一）
-            # 方式1：通过CSS选择器列表索引
-            tables = driver.find_elements(By.CSS_SELECTOR, "table.table-striped")
+            # 显式等待表格元素加载完成
+            wait = WebDriverWait(driver, 3)
+            tables = wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "table.table-striped")))
             if not tables:
                 logger.error("未找到目标表格")
                 return None
             table = tables[0]  # 取第一个表格
 
+
             # 获取有效数据行（跳过表头）
             rows = table.find_elements(By.CSS_SELECTOR, "tr:has(td)")
+
+            logger.info(f"找到数据行数：{len(rows)}")
 
             result_list = []
 
@@ -789,12 +802,13 @@ class MarketDataAnalyzer:
 
                 # 创建格式化记录，确保字段名称与COLUMN_DEFINITIONS一致
                 record = {
-                    "日期": cells[0].text.strip(),
-                    "value": cells[1].text.strip().replace(' %', '')
+                    "日期": self.format_ester_date(cells[0].get_attribute('textContent').strip()),
+                    "value": cells[1].get_attribute('textContent').strip().replace(' %', '')
                 }
                 result_list.append(record)
 
             logger.info(f"成功抓取 ESTER 数据: {len(result_list)} 条记录")
+            logger.info(f"成功抓取 ESTER 数据: {result_list} 条记录")
             return result_list
 
         except Exception as e:
