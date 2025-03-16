@@ -466,6 +466,8 @@ class MarketDataAnalyzer:
                 cell.alignment = Alignment(horizontal='left')
             elif sheet_name == 'New Bank Loan Addition' and col_idx == 1:
                 cell.alignment = Alignment(horizontal='left')
+            elif sheet_name == 'US Interest Rate' and col_idx == 1:
+                cell.alignment = Alignment(horizontal='left')
             else:
                 cell.alignment = Alignment(horizontal='right')
 
