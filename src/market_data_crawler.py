@@ -327,6 +327,8 @@ class MarketDataAnalyzer:
             cell = worksheet.cell(row=row, column=col_idx, value=value)
             if sheet_name == 'Import and Export' and col_idx == 1:
                 cell.alignment = Alignment(horizontal='left')
+            elif sheet_name == 'Money Supply' and col_idx == 1:
+                cell.alignment = Alignment(horizontal='left')
             else:
                 cell.alignment = Alignment(horizontal='right')
 
@@ -1050,7 +1052,7 @@ class MarketDataAnalyzer:
                 }
                 result_list.append(record)
 
-            logger.info(f"成功抓取 Money Supply 数据: {len(result_list)} 条记录")
+            logger.info(f"成功抓取 Money Supply 数据: {result_list} 条记录")
             return result_list
 
         except Exception as e:
