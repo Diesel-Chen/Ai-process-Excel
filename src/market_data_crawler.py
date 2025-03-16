@@ -329,6 +329,8 @@ class MarketDataAnalyzer:
                 cell.alignment = Alignment(horizontal='left')
             elif sheet_name == 'Money Supply' and col_idx == 1:
                 cell.alignment = Alignment(horizontal='left')
+            elif sheet_name == 'PPI' and col_idx == 1:
+                cell.alignment = Alignment(horizontal='left')
             else:
                 cell.alignment = Alignment(horizontal='right')
 
@@ -839,7 +841,7 @@ class MarketDataAnalyzer:
                 result_list.append(record)
 
             logger.info(f"成功抓取 ESTER 数据: {len(result_list)} 条记录")
-            logger.info(f"成功抓取 ESTER 数据: {result_list} 条记录")
+            logger.info(f"成功抓取 ESTER 数据: {result_list} ")
             return result_list
 
         except Exception as e:
@@ -939,7 +941,7 @@ class MarketDataAnalyzer:
                 }
                 result_list.append(record)
 
-            logger.info(f"成功抓取 US Interest Rate 数据: {result_list} 条记录")
+            logger.info(f"成功抓取 US Interest Rate 数据: {result_list} ")
             return result_list
 
         except Exception as e:
@@ -996,7 +998,7 @@ class MarketDataAnalyzer:
                 }
                 result_list.append(record)
 
-            logger.info(f"成功抓取 Import and Export 数据: {result_list} 条记录")
+            logger.info(f"成功抓取 Import and Export 数据: {result_list} ")
             return result_list
 
         except Exception as e:
@@ -1052,7 +1054,7 @@ class MarketDataAnalyzer:
                 }
                 result_list.append(record)
 
-            logger.info(f"成功抓取 Money Supply 数据: {result_list} 条记录")
+            logger.info(f"成功抓取 Money Supply 数据: {result_list} ")
             return result_list
 
         except Exception as e:
@@ -1102,7 +1104,7 @@ class MarketDataAnalyzer:
                 }
                 result_list.append(record)
 
-            logger.info(f"成功抓取 PPI 数据: {len(result_list)} 条记录")
+            logger.info(f"成功抓取 PPI 数据: {result_list}")
             return result_list
 
         except Exception as e:
