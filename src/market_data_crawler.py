@@ -157,6 +157,17 @@ class MarketDataAnalyzer:
         else:  # Linux/macOS
             return dt.strftime("%Y/%-m/%d")
 
+    # todo 等待时间好久 不知为啥
+    def format_jpy_rate_date(self, raw_date):
+        # 解析中文月份
+        dt = datetime.strptime(raw_date, "%m-%d-%Y")
+
+        # 判断操作系统
+        if platform.system() == "Windows":
+            return dt.strftime("%Y/%#m/%d")
+        else:  # Linux/macOS
+            return dt.strftime("%Y/%-m/%d")
+
 
     def get_data_by_openai(self, url):
         """
@@ -404,7 +415,6 @@ class MarketDataAnalyzer:
                 value_dt = datetime.strptime(value, '%Y/%m/%d')
                 if isinstance(value_dt, datetime):
                     value = value_dt.strftime('%Y-%m-%d')
-                    print('value:', value)
             if sheet_name == 'SOFR' and col_idx == 1:
                 value_dt = datetime.strptime(value, '%Y/%m/%d')
                 if isinstance(value_dt, datetime):
@@ -414,7 +424,6 @@ class MarketDataAnalyzer:
                     month = month.lstrip('0') if month.startswith('0') and len(month) > 1 else month
                     day = day.lstrip('0') if day.startswith('0') and len(day) > 1 else day
                     value = f"{month}/{day}/{year}"
-                    print('value:', value)
             cell = worksheet.cell(row=row_num, column=col_idx, value=value)
             if sheet_name == 'Shibor':
                 cell.alignment = Alignment(horizontal='left')
@@ -851,12 +860,13 @@ class MarketDataAnalyzer:
 
                 # 创建格式化记录，确保字段名称与COLUMN_DEFINITIONS一致
                 record = {
-                    "日期": cells[0].text.strip(),
-                    "value": cells[1].text.strip().replace(' %', '')
+                    "日期": self.format_jpy_rate_date(cells[0].get_attribute('textContent').strip()),
+                    "value": cells[1].get_attribute('textContent').strip().replace(' %', '')
                 }
                 result_list.append(record)
 
             logger.info(f"成功抓取 JPY rate 数据: {len(result_list)} 条记录")
+            logger.info(f"成功抓取 JPY rate 数据: {result_list}")
             return result_list
 
         except Exception as e:
