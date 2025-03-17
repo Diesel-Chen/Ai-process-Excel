@@ -13,3 +13,6 @@ __pycache__/
 *.log
 *.sqlite
 .DS_Store
+
+build/
+dist/

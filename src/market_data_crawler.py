@@ -5,7 +5,6 @@ from datetime import datetime
 from openai import OpenAI
 import config
 from bs4 import BeautifulSoup
-from fake_useragent import UserAgent
 import time
 import random
 from openpyxl import load_workbook
@@ -14,6 +13,7 @@ from openpyxl.styles import Alignment
 import platform
 from datetime import datetime
 import os
+import sys
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -127,8 +127,6 @@ class MarketDataAnalyzer:
 
     def __init__(self):
         print("初始化市场数据分析器...")
-        # 初始化User-Agent生成器
-        self.ua = UserAgent()
         # 预先初始化WebDriver
         self._init_driver()
 
@@ -161,7 +159,7 @@ class MarketDataAnalyzer:
             options.add_argument('--disable-gpu')
             options.add_argument('--no-sandbox')
             options.add_argument('--disable-dev-shm-usage')
-            options.add_argument(f'user-agent={UserAgent().random}')
+            options.add_argument(f'user-agent={self.get_random_user_agent()}')
 
             # 增加连接池设置
             options.add_argument('--proxy-server="direct://"')
@@ -263,6 +261,15 @@ class MarketDataAnalyzer:
             finally:
                 self.__class__._driver = None
 
+    def get_random_user_agent(self):
+        user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        ]
+        return random.choice(user_agents)
     def format_exchange_rate_date(self,raw_date):
         # 解析中文月份
         dt = datetime.strptime(raw_date, "%m月 %d, %Y")
@@ -359,7 +366,7 @@ class MarketDataAnalyzer:
         """
         try:
             headers = {
-                'User-Agent': self.ua.random,
+                'User-Agent': self.get_random_user_agent(),
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                 'Accept-Language': 'zh-CN,zh;q=0.8,en-US;q=0.5,en;q=0.3',
                 'Connection': 'keep-alive',
@@ -687,65 +694,75 @@ class MarketDataAnalyzer:
                     logger.error(f"{sheet_name}: 处理数据时出错: {str(e)}")
 
             # 4. 更新Excel文件
-            wb = load_workbook(config.EXCEL_OUTPUT_PATH)
+            try:
+                excel_path = config.EXCEL_OUTPUT_PATH
+                logger.info(f"尝试打开Excel文件: {excel_path}")
 
-            # 更新各个sheet
-            excel_updates = []
-            for sheet_name, data in results.items():
-                if not data:
-                    stats.add_skipped(sheet_name, "数据为空")
-                    continue
+                # 如果文件不存在，直接抛出错误
+                if not os.path.exists(excel_path):
+                    raise FileNotFoundError(f"Excel文件不存在: {excel_path}。请确保文件存在于正确的位置。")
 
-                if sheet_name not in wb.sheetnames:
-                    stats.add_skipped(sheet_name, "工作表不存在")
-                    continue
+                wb = load_workbook(excel_path)
 
-                ws = wb[sheet_name]
-
-                # 查找最后一行数据
-                last_row = self.find_last_row(ws)
-
-                # 根据数据类型选择不同的处理方法
-                if sheet_name in config.MONTHLY_DATA_PAIRS:
-                    # 月度数据处理
-                    new_date = data.get("日期", "")
-                    if not new_date:
-                        stats.add_skipped(sheet_name, "数据中缺少日期字段")
+                # 更新各个sheet
+                excel_updates = []
+                for sheet_name, data in results.items():
+                    if not data:
+                        stats.add_skipped(sheet_name, "数据为空")
                         continue
 
-                    # 获取最后一行的日期值
-                    last_date_value = ws.cell(row=last_row, column=1).value
+                    if sheet_name not in wb.sheetnames:
+                        stats.add_skipped(sheet_name, "工作表不存在")
+                        continue
 
-                    # 比较日期，如果不同则更新
-                    if str(last_date_value) != str(new_date):
-                        self.write_monthly_data(ws, data, last_row + 1)
-                        excel_updates.append(sheet_name)
+                    ws = wb[sheet_name]
+
+                    # 查找最后一行数据
+                    last_row = self.find_last_row(ws)
+
+                    # 根据数据类型选择不同的处理方法
+                    if sheet_name in config.MONTHLY_DATA_PAIRS:
+                        # 月度数据处理
+                        new_date = data.get("日期", "")
+                        if not new_date:
+                            stats.add_skipped(sheet_name, "数据中缺少日期字段")
+                            continue
+
+                        # 获取最后一行的日期值
+                        last_date_value = ws.cell(row=last_row, column=1).value
+
+                        # 比较日期，如果不同则更新
+                        if str(last_date_value) != str(new_date):
+                            self.write_monthly_data(ws, data, last_row + 1)
+                            excel_updates.append(sheet_name)
+                        else:
+                            logger.debug(f"{sheet_name}: 数据已是最新，无需更新")
                     else:
-                        logger.debug(f"{sheet_name}: 数据已是最新，无需更新")
+                        # 日频数据处理（包括汇率数据）
+                        update_result = self.write_daily_data(ws, data, last_row, sheet_name)
+                        if update_result:
+                            excel_updates.append(sheet_name)
+
+                # 保存Excel文件
+                wb.save(excel_path)
+
+                if excel_updates:
+                    print(f"\n已更新以下工作表: {', '.join(excel_updates)}")
                 else:
-                    # 日频数据处理（包括汇率数据）
-                    update_result = self.write_daily_data(ws, data, last_row, sheet_name)
-                    if update_result:
-                        excel_updates.append(sheet_name)
+                    print("\n所有数据均已是最新，无需更新Excel")
 
-            # 保存Excel文件
-            wb.save(config.EXCEL_OUTPUT_PATH)
+                logger.info(f"数据已成功保存到 {excel_path}")
 
-            if excel_updates:
-                print(f"\n已更新以下工作表: {', '.join(excel_updates)}")
-            else:
-                print("\n所有数据均已是最新，无需更新Excel")
+                # 打印统计摘要
+                stats.print_summary()
 
-            logger.info(f"数据已成功保存到 {config.EXCEL_OUTPUT_PATH}")
-
-            # 打印统计摘要
-            stats.print_summary()
-
-            return results
-
-        except Exception as e:
-            logger.error(f"更新Excel过程中出错: {str(e)}", exc_info=True)
-            return None
+                return results
+            except FileNotFoundError as e:
+                logger.error(str(e))
+                raise  # 重新抛出错误，不尝试创建新文件
+            except Exception as e:
+                logger.error(f"更新Excel过程中出错: {str(e)}", exc_info=True)
+                raise  # 重新抛出错误
         finally:
             self.close_driver()
 
@@ -1480,7 +1497,6 @@ if __name__ == "__main__":
 
     try:
         # 设置日志级别
-        import sys
         if len(sys.argv) > 1 and sys.argv[1] == "--debug":
             logger.setLevel(logging.DEBUG)
             print("已启用调试模式，将显示详细日志")
