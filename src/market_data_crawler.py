@@ -831,12 +831,45 @@ class MarketDataAnalyzer:
                         # 获取最后一行的日期值
                         last_date_value = ws.cell(row=last_row, column=1).value
 
-                        # 比较日期，如果不同则更新
-                        if str(last_date_value) != str(new_date):
-                            self.write_monthly_data(ws, data, last_row + 1)
-                            excel_updates.append(sheet_name)
+                        # 对Import and Export进行特殊处理
+                        if sheet_name == 'Import and Export':
+                            # 即使日期相同，也需要检查数据是否从"-"更新为具体数值
+                            need_update = False
+
+                            # 如果日期不同，直接更新
+                            if str(last_date_value) != str(new_date):
+                                need_update = True
+                            else:
+                                # 日期相同，检查各列数据是否有从"-"更新为具体数值的情况
+                                columns = config.COLUMN_DEFINITIONS[sheet_name]
+                                for col_idx, col_name in enumerate(columns, 1):
+                                    if col_name == '日期':
+                                        continue
+
+                                    # 获取Excel中的当前值
+                                    current_value = ws.cell(row=last_row, column=col_idx).value
+                                    # 获取新数据中的值
+                                    new_value = data.get(col_name, '')
+
+                                    # 检查是否从"-"更新为具体数值
+                                    if (current_value == '-' or current_value == '') and new_value != '-' and new_value != '':
+                                        logger.info(f"{sheet_name}: 列 '{col_name}' 从 '{current_value}' 更新为 '{new_value}'")
+                                        need_update = True
+                                        break
+
+                            if need_update:
+                                self.write_monthly_data(ws, data, last_row)  # 覆盖当前行
+                                excel_updates.append(sheet_name)
+                                logger.info(f"{sheet_name}: 数据已更新（部分值从'-'更新为具体数值）")
+                            else:
+                                logger.debug(f"{sheet_name}: 数据已是最新，无需更新")
                         else:
-                            logger.debug(f"{sheet_name}: 数据已是最新，无需更新")
+                            # 其他月度数据的常规处理
+                            if str(last_date_value) != str(new_date):
+                                self.write_monthly_data(ws, data, last_row + 1)
+                                excel_updates.append(sheet_name)
+                            else:
+                                logger.debug(f"{sheet_name}: 数据已是最新，无需更新")
                     else:
                         # 日频数据处理（包括汇率数据）
                         update_result = self.write_daily_data(ws, data, last_row, sheet_name)
