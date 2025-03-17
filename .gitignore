@@ -18,3 +18,4 @@ build/
 dist/
 Market Index.xlsx
 *.spec
+.DS_Store
