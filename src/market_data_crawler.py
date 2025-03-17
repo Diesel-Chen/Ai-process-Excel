@@ -385,10 +385,10 @@ class MarketDataAnalyzer:
 
             soup = BeautifulSoup(response.text, 'html.parser')
 
-            # 选择表格的前两行数据
-            rows = soup.select('tr.historical-data-v2_price__atUfP')[:2]
+            # 选择表格的前10行数据，而不是只选择前2行
+            rows = soup.select('tr.historical-data-v2_price__atUfP')[:10]
 
-            if len(rows) < 2:
+            if len(rows) < 1:
                 logger.error(f"汇率数据: 未找到足够的数据行，请检查HTML结构或反爬机制")
                 return None
 
@@ -486,77 +486,177 @@ class MarketDataAnalyzer:
 
         Args:
             worksheet: Excel工作表对象
-            data: 包含数据的列表（通常有两行）
+            data: 包含数据的列表（通常有多行）
             last_row: 最后一行的行号
             sheet_name: 工作表名称
 
         Returns:
             bool: 是否更新了数据
         """
-        if not data or len(data) < 2:
+        # 标准化日期字符串（移除前导零）的辅助函数
+        def normalize_date_str(date_str):
+            if not date_str:
+                return ""
+            # 替换所有的分隔符为标准分隔符
+            date_str = date_str.replace('-', '/').replace('.', '/')
+            parts = date_str.split('/')
+            if len(parts) == 3:
+                # 确保年份在前
+                if len(parts[0]) == 4:  # 年份在第一位
+                    year, month, day = parts
+                elif len(parts[2]) == 4:  # 年份在最后
+                    month, day, year = parts
+                else:
+                    return date_str  # 无法识别的格式
+
+                # 移除前导零
+                month = month.lstrip('0') if month.startswith('0') and len(month) > 1 else month
+                day = day.lstrip('0') if day.startswith('0') and len(day) > 1 else day
+                return f"{year}/{month}/{day}"
+            return date_str
+
+        if not data or len(data) < 1:
             logger.error(f"{sheet_name}: 数据不足，无法写入")
             return False
 
-        new_date_str1 = data[0].get("日期", "")
-        new_date_str2 = data[1].get("日期", "")
-        if not new_date_str1 or not new_date_str2:
+        # 获取最新数据的日期
+        new_date_str = data[0].get("日期", "")
+        if not new_date_str:
             logger.error(f"{sheet_name}: 数据中缺少日期字段")
             return False
 
-        # 解析新日期
-        try:
-            year1, month1, day1 = map(int, new_date_str1.split('/'))
-            new_date1 = datetime(year1, month1, day1)
-            year2, month2, day2 = map(int, new_date_str2.split('/'))
-            new_date2 = datetime(year2, month2, day2)
-        except Exception as e:
-            logger.error(f"{sheet_name}: 解析新日期 '{new_date_str1}' 或 '{new_date_str2}' 失败: {str(e)}")
-            return False
-
-        # **初始化 last_date**
-        last_date = None
-
         # 获取最后一行的日期值
         last_date_value = worksheet.cell(row=last_row, column=1).value
+        last_date_str = ""
+
+        # 解析现有日期和新日期为datetime对象，用于比较
+        new_date_obj = None
+        last_date_obj = None
+
+        # 解析新日期为datetime对象
+        try:
+            if '/' in new_date_str:
+                year, month, day = map(int, new_date_str.split('/'))
+                new_date_obj = datetime(year, month, day)
+            elif '-' in new_date_str:
+                year, month, day = map(int, new_date_str.split('-'))
+                new_date_obj = datetime(year, month, day)
+        except Exception as e:
+            logger.warning(f"{sheet_name}: 解析新日期 '{new_date_str}' 失败: {str(e)}")
 
         # 解析现有日期
         if isinstance(last_date_value, datetime):
-            last_date = last_date_value
+            last_date_obj = last_date_value
+            # 根据不同sheet格式化日期字符串
+            if sheet_name == 'SOFR':
+                last_date_str = last_date_value.strftime('%m/%d/%Y')
+                # 去掉月份和日期的前导零
+                month, day, year = last_date_str.split('/')
+                month = month.lstrip('0') if month.startswith('0') and len(month) > 1 else month
+                day = day.lstrip('0') if day.startswith('0') and len(day) > 1 else day
+                last_date_str = f"{month}/{day}/{year}"
+            elif sheet_name == 'Shibor':
+                last_date_str = last_date_value.strftime('%Y-%m-%d')
+            else:
+                # 标准格式，但需要处理前导零问题
+                if platform.system() == "Windows":
+                    last_date_str = last_date_value.strftime('%Y/%#m/%d')
+                else:  # Linux/macOS
+                    last_date_str = last_date_value.strftime('%Y/%-m/%d')
         else:
             try:
                 if last_date_value:
                     if sheet_name == 'SOFR':
                         month, day, year = map(int, str(last_date_value).split('/'))
-                        last_date = datetime(year, month, day)
+                        last_date_obj = datetime(year, month, day)
                     elif sheet_name == 'Shibor':
                         year, month, day = map(int, str(last_date_value).split('-'))
-                        last_date = datetime(year, month, day)
+                        last_date_obj = datetime(year, month, day)
                     else:
                         year, month, day = map(int, str(last_date_value).split('/'))
-                        last_date = datetime(year, month, day)
+                        last_date_obj = datetime(year, month, day)
             except Exception as e:
                 logger.warning(f"{sheet_name}: 解析现有日期 '{last_date_value}' 失败: {str(e)}")
+        logger.debug(f"{sheet_name}: 新日期={new_date_str}, 旧日期={last_date_str}, 新日期对象={new_date_obj}, 旧日期对象={last_date_obj}")
 
-        # **确保 last_date 被正确初始化**
-        if last_date is None:
-            logger.warning(f"{sheet_name}: 未找到有效日期，跳过")
+        # 优先使用datetime对象比较，更可靠
+        if new_date_obj and last_date_obj and new_date_obj.date() == last_date_obj.date():
+            logger.debug(f"{sheet_name}: 日期对象比较相同 ({new_date_obj.date()} == {last_date_obj.date()})，数据已是最新，无需更新")
             return False
+        elif new_date_obj and last_date_obj:
+            logger.debug(f"{sheet_name}: 日期对象比较不同 ({new_date_obj.date()} != {last_date_obj.date()})，需要更新数据")
 
-        # **比较日期并决定写入策略**
-        if new_date1.date() == last_date.date():
-            logger.debug(f"{sheet_name}: 数据已是最新，无需更新")
-            return False
-        elif new_date2.date() == last_date.date():
-            # 添加两行数据
-            self.write_single_daily_row(worksheet, data[1], last_row, sheet_name)
-            self.write_single_daily_row(worksheet, data[0], last_row + 1, sheet_name)
-            logger.debug(f"{sheet_name}: 已添加两行新数据")
+        # 如果对象比较失败，尝试标准化字符串后比较
+        if not (new_date_obj and last_date_obj):
+            norm_new_date = normalize_date_str(new_date_str)
+            norm_last_date = normalize_date_str(last_date_str)
+
+            logger.debug(f"{sheet_name}: 标准化后 - 新日期={norm_new_date}, 旧日期={norm_last_date}")
+
+            if norm_new_date == norm_last_date:
+                logger.debug(f"{sheet_name}: 标准化字符串比较相同，数据已是最新，无需更新")
+                return False
+            else:
+                logger.debug(f"{sheet_name}: 标准化字符串比较不同，需要更新数据")
+
+        # 在数据列表中查找最后一行日期的位置
+        last_date_index = -1
+
+        # 使用datetime对象比较查找
+        if last_date_obj:
+            logger.debug(f"{sheet_name}: 使用日期对象比较查找最后一行日期")
+            for i, item in enumerate(data):
+                item_date_str = item.get("日期", "")
+                try:
+                    if '/' in item_date_str:
+                        year, month, day = map(int, item_date_str.split('/'))
+                        item_date = datetime(year, month, day)
+                    elif '-' in item_date_str:
+                        year, month, day = map(int, item_date_str.split('-'))
+                        item_date = datetime(year, month, day)
+                    else:
+                        continue
+
+                    if item_date.date() == last_date_obj.date():
+                        logger.debug(f"{sheet_name}: 找到最后一行日期(对象比较): {item_date} 在索引 {i}")
+                        last_date_index = i
+                        break
+                except Exception as e:
+                    logger.debug(f"{sheet_name}: 解析日期 '{item_date_str}' 失败: {str(e)}")
+                    continue
+
+        # 如果对象比较失败，尝试标准化字符串比较
+        if last_date_index == -1:
+            logger.debug(f"{sheet_name}: 使用标准化字符串比较查找最后一行日期")
+            norm_last_date = normalize_date_str(last_date_str)
+            for i, item in enumerate(data):
+                item_date_str = item.get("日期", "")
+                norm_item_date = normalize_date_str(item_date_str)
+                logger.debug(f"{sheet_name}: 比较 {norm_item_date} 与 {norm_last_date}")
+                if norm_item_date == norm_last_date:
+                    logger.debug(f"{sheet_name}: 找到最后一行日期(字符串比较): {item_date_str} 在索引 {i}")
+                    last_date_index = i
+                    break
+
+        # 如果找到了最后一行日期
+        if last_date_index != -1:
+            # 用找到的数据覆盖最后一行
+            self.write_single_daily_row(worksheet, data[last_date_index], last_row, sheet_name)
+            logger.debug(f"{sheet_name}: 已更新第 {last_row} 行数据")
+
+            # 将最后一行日期之前的数据倒序插入
+            for i in range(last_date_index - 1, -1, -1):
+                # 插入新行
+                target_row = last_row + (last_date_index - i)
+                self.write_single_daily_row(worksheet, data[i], target_row, sheet_name)
+                logger.info(f"{sheet_name}: 已在第 {target_row} 行插入新数据")
+
             return True
         else:
-            # 只需要添加第一行数据
+            # 如果没找到最后一行日期，则直接添加最新数据
             target_row = last_row + 1
             self.write_single_daily_row(worksheet, data[0], target_row, sheet_name)
-            logger.debug(f"{sheet_name}: 已添加一行新数据")
+            logger.info(f"{sheet_name}: 已在第 {target_row} 行添加新数据")
             return True
 
     def write_single_daily_row(self, worksheet, row_data, row_num, sheet_name):
@@ -798,8 +898,8 @@ class MarketDataAnalyzer:
             # 获取表格引用
             table = driver.find_element(By.XPATH, '//table[contains(@class,"detailTab")]')
 
-            # 单次获取所有需要的数据
-            rows = table.find_elements(By.XPATH, './/tbody/tr[position()<=2]')
+            # 单次获取所有需要的数据 - 修改为获取前10行
+            rows = table.find_elements(By.XPATH, './/tbody/tr[position()<=10]')
             data = []
 
             for row in rows:
@@ -815,18 +915,19 @@ class MarketDataAnalyzer:
                     # 立即提取文本内容
                     cell_texts = [cell.text for cell in cells]
 
+
                     # 动态映射字段
                     item = {
-                        "日期": self.format_stee_price_date(cell_texts[0]),
-                        "本日": cell_texts[1],
-                        "昨日": cell_texts[2],
-                        "日环比": cell_texts[3],
-                        "上周": cell_texts[4],
-                        "周环比": cell_texts[5],
-                        "上月度": cell_texts[6],
-                        "与上月比": cell_texts[7],
-                        "去年同期": cell_texts[8],
-                        "与去年比": cell_texts[9]
+                        "日期": self.format_stee_price_date(cells[0].get_attribute('textContent').strip()),
+                        "本日": cells[1].get_attribute('textContent').strip(),
+                        "昨日": cells[2].get_attribute('textContent').strip(),
+                        "日环比": cells[3].get_attribute('textContent').strip(),
+                        "上周": cells[4].get_attribute('textContent').strip(),
+                        "周环比": cells[5].get_attribute('textContent').strip(),
+                        "上月度": cells[6].get_attribute('textContent').strip(),
+                        "与上月比": cells[7].get_attribute('textContent').strip(),
+                        "去年同期": cells[8].get_attribute('textContent').strip(),
+                        "与去年比": cells[9].get_attribute('textContent').strip(),
                     }
                     data.append(item)
 
@@ -834,7 +935,7 @@ class MarketDataAnalyzer:
                     logger.debug("Steel price: 检测到元素过期，重新获取表格数据...")
                     # 重新获取表格和行
                     table = driver.find_element(By.XPATH, '//table[contains(@class,"detailTab")]')
-                    rows = table.find_elements(By.XPATH, './/tbody/tr[position()<=2]')
+                    rows = table.find_elements(By.XPATH, './/tbody/tr[position()<=10]')
                     continue
 
             logger.debug(f"成功抓取 Steel price 数据: {len(data)} 条记录")
@@ -869,8 +970,8 @@ class MarketDataAnalyzer:
             row_count = 0
 
             for row in table.find_elements(By.CSS_SELECTOR, "tr:has(td)"):
-                if row_count >= 2:
-                    break  # 只取前两行数据
+                if row_count >= 10:  # 修改为获取前10行数据
+                    break  # 只取前10行数据
 
                 cells = row.find_elements(By.TAG_NAME, "td")
                 if len(cells) < 9:
@@ -924,7 +1025,7 @@ class MarketDataAnalyzer:
             row_index = 0
 
             for row in data_rows:
-                if row_index > 2:
+                if row_index >= 10:  # 修改为获取前10行数据
                     break
 
                 cells = row.find_elements(By.TAG_NAME, "td")
@@ -976,8 +1077,8 @@ class MarketDataAnalyzer:
             rows = table.find_elements(By.CSS_SELECTOR, "tr:has(td)")
             result_list = []
 
-            # 处理前两行数据
-            for row in rows[:2]:
+            # 处理前10行数据
+            for row in rows[:10]:
                 cells = row.find_elements(By.TAG_NAME, "td")
 
                 # 确保列数足够
@@ -1038,8 +1139,8 @@ class MarketDataAnalyzer:
 
             result_list = []
 
-            # 处理前两行数据
-            for row in rows[:2]:
+            # 处理前10行数据
+            for row in rows[:10]:
                 cells = row.find_elements(By.TAG_NAME, "td")
 
                 # 验证数据完整性
@@ -1087,8 +1188,8 @@ class MarketDataAnalyzer:
             rows = table.find_elements(By.CSS_SELECTOR, "tr:has(td)")
             result_list = []
 
-            # 处理前两行数据
-            for row in rows[:2]:
+            # 处理前10行数据
+            for row in rows[:10]:
                 cells = row.find_elements(By.TAG_NAME, "td")
 
                 # 验证数据完整性
