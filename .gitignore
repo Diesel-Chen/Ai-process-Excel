@@ -19,3 +19,5 @@ dist/
 Market Index.xlsx
 *.spec
 .DS_Store
+pyenv-win-3.1.1/
+python-3.11.4-amd64.exe

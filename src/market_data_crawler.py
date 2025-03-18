@@ -2,7 +2,6 @@ import requests
 import pandas as pd
 import logging
 from datetime import datetime
-from openai import OpenAI
 import config
 from bs4 import BeautifulSoup
 import time
@@ -53,6 +52,11 @@ logging.basicConfig(
     datefmt='%H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+
+# 禁用第三方库的日志
+logging.getLogger('urllib3').setLevel(logging.WARNING)
+logging.getLogger('selenium').setLevel(logging.WARNING)
+logging.getLogger('webdriver_manager').setLevel(logging.WARNING)
 
 # 创建一个统计对象来跟踪成功和失败的爬取
 class CrawlStats:
@@ -161,6 +165,14 @@ class MarketDataAnalyzer:
             options.add_argument('--disable-dev-shm-usage')
             options.add_argument(f'user-agent={self.get_random_user_agent()}')
 
+            # 抑制浏览器日志输出
+            options.add_argument('--log-level=3')  # 仅显示致命错误
+            options.add_experimental_option('excludeSwitches', ['enable-logging'])  # 禁用DevTools日志
+
+            # 禁用WebGL相关警告
+            options.add_argument('--disable-webgl')
+            options.add_argument('--disable-webgl2')
+
             # 增加连接池设置
             options.add_argument('--proxy-server="direct://"')
             options.add_argument('--proxy-bypass-list=*')
@@ -180,7 +192,15 @@ class MarketDataAnalyzer:
             try:
                 # 首先尝试Chrome
                 driver_path = ChromeDriverManager().install()
-                service = Service(executable_path=driver_path)
+
+                # 创建一个空的日志文件对象来抑制输出
+                if system == "Windows":
+                    import os
+                    null_output = open(os.devnull, 'w')
+                    service = Service(executable_path=driver_path, log_output=null_output)
+                else:
+                    service = Service(executable_path=driver_path)
+
                 MarketDataAnalyzer._driver = webdriver.Chrome(service=service, options=options)
                 logger.info("成功初始化 Chrome WebDriver")
             except Exception as e:
@@ -193,11 +213,22 @@ class MarketDataAnalyzer:
                         edge_options.add_argument(arg)
                     edge_options.page_load_strategy = 'eager'
 
+                    # 添加Edge特有的日志抑制
+                    edge_options.add_experimental_option('excludeSwitches', ['enable-logging'])
+
                     # 添加相同的性能优化设置
                     edge_options.add_experimental_option("prefs", prefs)
 
                     driver_path = EdgeChromiumDriverManager().install()
-                    service = Service(executable_path=driver_path)
+
+                    # 创建一个空的日志文件对象来抑制输出
+                    if system == "Windows":
+                        import os
+                        null_output = open(os.devnull, 'w')
+                        service = Service(executable_path=driver_path, log_output=null_output)
+                    else:
+                        service = Service(executable_path=driver_path)
+
                     MarketDataAnalyzer._driver = webdriver.Edge(service=service, options=edge_options)
                     logger.info("成功初始化 Edge WebDriver")
                 except Exception as e:
@@ -210,13 +241,25 @@ class MarketDataAnalyzer:
                             if not arg.startswith('--disable-dev-shm-usage') and not arg.startswith('--no-sandbox'):
                                 firefox_options.add_argument(arg)
                         firefox_options.page_load_strategy = 'eager'
+                        firefox_options.add_argument('--log-level=3')  # 仅显示致命错误
 
                         # Firefox特有的性能设置
                         firefox_options.set_preference("permissions.default.image", 2)
                         firefox_options.set_preference("dom.popup_maximum", 0)
 
+                        # 禁用Firefox的日志
+                        firefox_options.set_preference("devtools.console.stdout.content", False)
+
                         driver_path = GeckoDriverManager().install()
-                        service = Service(executable_path=driver_path)
+
+                        # 创建一个空的日志文件对象来抑制输出
+                        if system == "Windows":
+                            import os
+                            null_output = open(os.devnull, 'w')
+                            service = Service(executable_path=driver_path, log_output=null_output)
+                        else:
+                            service = Service(executable_path=driver_path)
+
                         MarketDataAnalyzer._driver = webdriver.Firefox(service=service, options=firefox_options)
                         logger.info("成功初始化 Firefox WebDriver")
                     except Exception as e:
