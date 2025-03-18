@@ -1,0 +1,25 @@
+version: "3"
+
+services:
+  market-data-app:
+    build: .
+    container_name: market-data-app
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./Market Index.xlsx:/app/Market Index.xlsx
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+
+  nginx:
+    image: nginx:latest
+    container_name: market-data-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./static:/usr/share/nginx/html
+      - ./nginx_config.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - market-data-app
+    restart: unless-stopped

@@ -1,0 +1,15 @@
+[Unit]
+Description=Market Data Crawler Service
+After=network.target
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/path/to/your/project
+# 不再需要单独设置Python环境，start.py会自动检测和激活虚拟环境
+ExecStart=/usr/bin/python3 start.py --mode prod --port 8080 --no-browser
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

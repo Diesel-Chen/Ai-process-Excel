@@ -1,0 +1,51 @@
+body {
+  font-family: "Microsoft YaHei", Arial, sans-serif;
+  padding: 20px;
+  background-color: #f8f9fa;
+}
+.header {
+  margin-bottom: 30px;
+  text-align: center;
+}
+.log-container {
+  height: 500px;
+  overflow-y: auto;
+  background-color: #f1f1f1;
+  border-radius: 8px;
+  padding: 10px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  margin-top: 20px;
+  border: 1px solid #ddd;
+}
+.control-panel {
+  margin-bottom: 20px;
+  display: flex;
+  justify-content: center;
+  gap: 15px;
+}
+.log-entry {
+  margin-bottom: 5px;
+  font-size: 14px;
+}
+.log-INFO {
+  color: #0d6efd;
+}
+.log-DEBUG {
+  color: #6c757d;
+}
+.log-WARNING {
+  color: #ffc107;
+}
+.log-ERROR {
+  color: #dc3545;
+}
+.status-card {
+  margin-top: 20px;
+  margin-bottom: 20px;
+}
+.spinner-border {
+  margin-right: 10px;
+}
+#downloadBtn {
+  display: none;
+}
