@@ -16,6 +16,7 @@ body {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   margin-top: 20px;
   border: 1px solid #ddd;
+  line-height: 1.5;
 }
 .control-panel {
   margin-bottom: 20px;
@@ -26,18 +27,28 @@ body {
 .log-entry {
   margin-bottom: 5px;
   font-size: 14px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background-color: rgba(255, 255, 255, 0.8);
+  border-left: 3px solid transparent;
 }
 .log-INFO {
   color: #0d6efd;
+  border-left-color: #0d6efd;
 }
 .log-DEBUG {
   color: #6c757d;
+  border-left-color: #6c757d;
 }
 .log-WARNING {
-  color: #ffc107;
+  color: #fd7e14;
+  border-left-color: #fd7e14;
+  font-weight: 500;
 }
 .log-ERROR {
   color: #dc3545;
+  border-left-color: #dc3545;
+  font-weight: 700;
 }
 .status-card {
   margin-top: 20px;
@@ -48,4 +59,82 @@ body {
 }
 #downloadBtn {
   display: none;
+}
+
+#logContainer {
+  height: 400px;
+  overflow-y: auto;
+  background-color: #f8f9fa;
+  border: 1px solid #dee2e6;
+  border-radius: 4px;
+  padding: 10px;
+  margin: 10px 0;
+  font-family: monospace;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.log-entry {
+  padding: 4px 8px;
+  margin: 2px 0;
+  border-radius: 3px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.log-debug {
+  color: #6c757d;
+  background-color: #f8f9fa;
+}
+
+.log-info {
+  color: #0d6efd;
+  background-color: #f1f8ff;
+}
+
+.log-warning {
+  color: #ffc107;
+  background-color: #fff3cd;
+}
+
+.log-error {
+  color: #dc3545;
+  background-color: #f8d7da;
+}
+
+.log-timestamp {
+  color: #6c757d;
+  font-weight: normal;
+}
+
+.log-icon {
+  margin: 0 4px;
+}
+
+.log-level {
+  font-weight: bold;
+  margin-right: 4px;
+}
+
+.log-message {
+  color: #212529;
+}
+
+/* 滚动条样式 */
+#logContainer::-webkit-scrollbar {
+  width: 8px;
+}
+
+#logContainer::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 4px;
+}
+
+#logContainer::-webkit-scrollbar-thumb {
+  background: #888;
+  border-radius: 4px;
+}
+
+#logContainer::-webkit-scrollbar-thumb:hover {
+  background: #555;
 }

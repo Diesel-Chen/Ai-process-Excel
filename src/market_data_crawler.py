@@ -75,20 +75,29 @@ class CrawlStats:
         self.skipped.append((name, reason))
 
     def print_summary(self):
-        print("\n===== 爬取统计摘要 =====")
-        print(f"成功: {len(self.success)} 项")
+        logger.info("\n===== 爬取统计摘要 =====")
+
+        # 成功项
         if self.success:
-            print(f"  {', '.join(self.success)}")
+            logger.info(f"成功: {len(self.success)} 项")
+            # 将成功项分组显示，每行最多显示 4 个项目
+            success_items = self.success[:]
+            while success_items:
+                group = success_items[:4]
+                success_items = success_items[4:]
+                logger.info(f"  {', '.join(group)}")
 
+        # 失败项
         if self.failed:
-            print(f"\n失败: {len(self.failed)} 项")
+            logger.info(f"\n失败: {len(self.failed)} 项")
             for name, reason in self.failed:
-                print(f"  {name}: {reason}")
+                logger.error(f"  {name}: {reason}")
 
+        # 跳过项
         if self.skipped:
-            print(f"\n跳过: {len(self.skipped)} 项")
+            logger.info(f"\n跳过: {len(self.skipped)} 项")
             for name, reason in self.skipped:
-                print(f"  {name}: {reason}")
+                logger.warning(f"  {name}: {reason}")
 
 def log_execution_time(func):
     def wrapper(*args, **kwargs):
@@ -620,14 +629,15 @@ class MarketDataAnalyzer:
                         last_date_obj = datetime(year, month, day)
             except Exception as e:
                 logger.warning(f"{sheet_name}: 解析现有日期 '{last_date_value}' 失败: {str(e)}")
-        logger.debug(f"{sheet_name}: 新日期={new_date_str}, 旧日期={last_date_str}, 新日期对象={new_date_obj}, 旧日期对象={last_date_obj}")
+        # logger.debug(f"{sheet_name}: 新日期={new_date_str}, 旧日期={last_date_str}, 新日期对象={new_date_obj}, 旧日期对象={last_date_obj}")
 
         # 优先使用datetime对象比较，更可靠
         if new_date_obj and last_date_obj and new_date_obj.date() == last_date_obj.date():
-            logger.debug(f"{sheet_name}: 日期对象比较相同 ({new_date_obj.date()} == {last_date_obj.date()})，数据已是最新，无需更新")
+            # logger.debug(f"{sheet_name}: 日期对象比较相同 ({new_date_obj.date()} == {last_date_obj.date()})，数据已是最新，无需更新")
             return False
         elif new_date_obj and last_date_obj:
-            logger.debug(f"{sheet_name}: 日期对象比较不同 ({new_date_obj.date()} != {last_date_obj.date()})，需要更新数据")
+            # logger.debug(f"{sheet_name}: 日期对象比较不同 ({new_date_obj.date()} != {last_date_obj.date()})，需要更新数据")
+            return True
 
         # 如果对象比较失败，尝试标准化字符串后比较
         if not (new_date_obj and last_date_obj):
@@ -641,6 +651,7 @@ class MarketDataAnalyzer:
                 return False
             else:
                 logger.debug(f"{sheet_name}: 标准化字符串比较不同，需要更新数据")
+                return True
 
         # 在数据列表中查找最后一行日期的位置
         last_date_index = -1
@@ -762,12 +773,12 @@ class MarketDataAnalyzer:
             results = {}
 
             # 1. 并行处理汇率数据（不需要WebDriver）
-            print("开始并行爬取汇率数据...")
+            logger.info("开始并行爬取汇率数据...")
             with concurrent.futures.ThreadPoolExecutor(max_workers=7) as executor:
                 future_to_sheet = {}
 
                 for pair, url in config.CURRENCY_PAIRS.items():
-                    print(f"正在分析 {pair} 的数据...")
+                    logger.info(f"正在分析 {pair} 的数据...")
                     future = executor.submit(self.crawl_exchange_rate, url)
                     future_to_sheet[future] = pair
 
@@ -778,7 +789,7 @@ class MarketDataAnalyzer:
                         if data:
                             results[sheet_name] = data
                             stats.add_success(sheet_name)
-                            print(f"✓ 成功获取 {sheet_name} 数据")
+                            logger.info(f"✓ 成功获取 {sheet_name} 数据")
                         else:
                             stats.add_failure(sheet_name, "爬取返回空数据")
                             logger.warning(f"{sheet_name}: 爬取返回空数据")
@@ -787,9 +798,9 @@ class MarketDataAnalyzer:
                         logger.error(f"{sheet_name}: 处理数据时出错: {str(e)}")
 
             # 2. 顺序处理日频数据（需要WebDriver）
-            print("\n开始爬取日频数据...")
+            logger.info("\n开始爬取日频数据...")
             for sheet_name, info in config.DAILY_DATA_PAIRS.items():
-                print(f"正在分析日频数据 {sheet_name}...")
+                logger.info(f"正在分析日频数据 {sheet_name}...")
                 try:
                     # 确保WebDriver已初始化
                     self._init_driver()
@@ -801,7 +812,7 @@ class MarketDataAnalyzer:
                     if data:
                         results[sheet_name] = data
                         stats.add_success(sheet_name)
-                        print(f"✓ 成功获取 {sheet_name} 数据")
+                        logger.info(f"✓ 成功获取 {sheet_name} 数据")
                     else:
                         stats.add_failure(sheet_name, "爬取返回空数据")
                         logger.warning(f"{sheet_name}: 爬取返回空数据")
@@ -810,9 +821,9 @@ class MarketDataAnalyzer:
                     logger.error(f"{sheet_name}: 处理数据时出错: {str(e)}")
 
             # 3. 顺序处理月度数据（需要WebDriver）
-            print("\n开始爬取月度数据...")
+            logger.info("\n开始爬取月度数据...")
             for sheet_name, info in config.MONTHLY_DATA_PAIRS.items():
-                print(f"正在分析月度数据 {sheet_name}...")
+                logger.info(f"正在分析月度数据 {sheet_name}...")
                 try:
                     # 确保WebDriver已初始化
                     self._init_driver()
@@ -828,7 +839,7 @@ class MarketDataAnalyzer:
                         else:
                             results[sheet_name] = data
                         stats.add_success(sheet_name)
-                        print(f"✓ 成功获取 {sheet_name} 数据")
+                        logger.info(f"✓ 成功获取 {sheet_name} 数据")
                     else:
                         stats.add_failure(sheet_name, "爬取返回空数据")
                         logger.warning(f"{sheet_name}: 爬取返回空数据")
@@ -847,21 +858,26 @@ class MarketDataAnalyzer:
 
                 wb = load_workbook(excel_path)
 
+                updated_sheets = []  # 记录已更新的工作表
+
                 # 更新各个sheet
                 excel_updates = []
                 for sheet_name, data in results.items():
                     if not data:
                         stats.add_skipped(sheet_name, "数据为空")
+                        logger.warning(f"工作表 {sheet_name} 的数据为空，跳过更新")
                         continue
 
                     if sheet_name not in wb.sheetnames:
                         stats.add_skipped(sheet_name, "工作表不存在")
+                        logger.warning(f"工作表 {sheet_name} 不存在，跳过更新")
                         continue
 
                     ws = wb[sheet_name]
 
                     # 查找最后一行数据
                     last_row = self.find_last_row(ws)
+
 
                     # 根据数据类型选择不同的处理方法
                     if sheet_name in config.MONTHLY_DATA_PAIRS:
@@ -903,31 +919,38 @@ class MarketDataAnalyzer:
                             if need_update:
                                 self.write_monthly_data(ws, data, last_row)  # 覆盖当前行
                                 excel_updates.append(sheet_name)
-                                logger.info(f"{sheet_name}: 数据已更新（部分值从'-'更新为具体数值）")
+                                updated_sheets.append(sheet_name)
+                                logger.info(f"已在工作表 {sheet_name} 的第 {last_row+1} 行插入新数据: {new_date}")
                             else:
-                                logger.debug(f"{sheet_name}: 数据已是最新，无需更新")
+                                logger.info(f"工作表 {sheet_name} 的数据已是最新，无需更新")
                         else:
                             # 其他月度数据的常规处理
                             if str(last_date_value) != str(new_date):
                                 self.write_monthly_data(ws, data, last_row + 1)
                                 excel_updates.append(sheet_name)
+                                updated_sheets.append(sheet_name)
+                                logger.info(f"已在工作表 {sheet_name} 的第 {last_row+1} 行插入新数据: {new_date}")
                             else:
-                                logger.debug(f"{sheet_name}: 数据已是最新，无需更新")
+                                logger.info(f"工作表 {sheet_name} 的数据已是最新，无需更新")
                     else:
                         # 日频数据处理（包括汇率数据）
                         update_result = self.write_daily_data(ws, data, last_row, sheet_name)
                         if update_result:
                             excel_updates.append(sheet_name)
+                            updated_sheets.append(sheet_name)
+                            logger.info(f"已在工作表 {sheet_name} 的第 {last_row} 行插入新数据")
 
                 # 保存Excel文件
-                wb.save(excel_path)
-
                 if excel_updates:
-                    print(f"\n已更新以下工作表: {', '.join(excel_updates)}")
+                    logger.info(f"开始保存Excel文件: {excel_path}")
+                    try:
+                        wb.save(excel_path)
+                        logger.info(f"✅ Excel文件保存成功，已更新以下工作表: {', '.join(updated_sheets)}")
+                    except Exception as e:
+                        logger.error(f"保存Excel文件时出错: {str(e)}")
+                        return False
                 else:
-                    print("\n所有数据均已是最新，无需更新Excel")
-
-                logger.info(f"数据已成功保存到 {excel_path}")
+                    logger.info("所有工作表数据均已是最新，Excel文件未做修改")
 
                 # 打印统计摘要
                 stats.print_summary()

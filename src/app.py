@@ -14,7 +14,26 @@ import market_data_crawler
 import config
 
 app = Flask(__name__, static_folder='../static', static_url_path='')
-CORS(app, resources={r"/api/*": {"origins": "*"}})  # 配置CORS以允许前端访问API
+
+# 配置CORS，允许所有来源，所有方法，所有头部
+CORS(app, resources={
+    r"/api/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization", "Accept", "Origin", "Referer"],
+        "expose_headers": ["Content-Type", "Authorization"],
+        "supports_credentials": True
+    }
+})
+
+# 添加CORS预检请求的处理
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization,Accept,Origin,Referer')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    response.headers.add('Access-Control-Allow-Credentials', 'true')
+    return response
 
 # 创建一个队列用于存储日志消息
 log_queue = queue.Queue()
@@ -158,23 +177,64 @@ def get_logs():
     def generate():
         # 发送队列中现有的所有日志
         logs = list(log_queue.queue)
-        yield f"data: {logs}\n\n"
+        if logs:
+            json_str = str(logs).replace("'", '"')
+            yield f"data: {json_str}\n\n"
 
         # 定期发送新日志
         last_size = len(logs)
+        empty_count = 0  # 用于追踪连续空检查的次数
+        max_empty_checks = 10  # 最大空检查次数
+
         while True:
             time.sleep(0.5)  # 每0.5秒检查一次
             current_logs = list(log_queue.queue)
-            if len(current_logs) > last_size:
-                yield f"data: {current_logs[last_size:]}\n\n"
-                last_size = len(current_logs)
 
-            # 如果爬虫不再运行且没有新日志，结束流
-            if not crawler_running and len(current_logs) == last_size:
-                yield f"data: [{{\"level\":\"INFO\",\"message\":\"日志流结束\",\"timestamp\":\"{datetime.now().strftime('%H:%M:%S')}\"}}]\n\n"
+            # 如果有新日志
+            if len(current_logs) > last_size:
+                new_logs = current_logs[last_size:]
+                json_str = str(new_logs).replace("'", '"')
+                yield f"data: {json_str}\n\n"
+                last_size = len(current_logs)
+                empty_count = 0  # 重置空检查计数
+            else:
+                empty_count += 1
+
+            # 检查是否应该结束流
+            if not crawler_running:
+                # 等待一段时间确保所有日志都已经进入队列
+                time.sleep(1)
+                final_logs = list(log_queue.queue)
+
+                # 如果有最终的日志没有发送
+                if len(final_logs) > last_size:
+                    remaining_logs = final_logs[last_size:]
+                    json_str = str(remaining_logs).replace("'", '"')
+                    yield f"data: {json_str}\n\n"
+
+                # 发送结束消息
+                end_message = [{
+                    "level": "INFO",
+                    "message": "=== 数据更新完成 ===",
+                    "timestamp": datetime.now().strftime('%H:%M:%S')
+                }]
+                json_str = str(end_message).replace("'", '"')
+                yield f"data: {json_str}\n\n"
                 break
 
-    return Response(stream_with_context(generate()), content_type='text/event-stream')
+            # 如果连续多次检查都没有新日志，且爬虫已经停止，则结束流
+            if empty_count >= max_empty_checks and not crawler_running:
+                break
+
+    return Response(
+        stream_with_context(generate()),
+        content_type='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no'
+        }
+    )
 
 @app.route('/api/download', methods=['GET'])
 def download_excel():
