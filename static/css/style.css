@@ -1,7 +1,23 @@
+/* CSS重置 */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
 body {
   font-family: "Microsoft YaHei", Arial, sans-serif;
   padding: 20px;
   background-color: #f8f9fa;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 统一表单元素样式 */
+input, button, select, textarea {
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
 }
 .header {
   margin-bottom: 30px;
@@ -10,13 +26,14 @@ body {
 .log-container {
   height: 500px;
   overflow-y: auto;
-  background-color: #f1f1f1;
+  background-color: #fff;
   border-radius: 8px;
-  padding: 10px;
+  padding: 15px;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   margin-top: 20px;
-  border: 1px solid #ddd;
-  line-height: 1.5;
+  border: 1px solid #dee2e6;
+  line-height: 1.6;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.05);
 }
 .control-panel {
   margin-bottom: 20px;
@@ -58,7 +75,8 @@ body {
   margin-right: 10px;
 }
 #downloadBtn {
-  display: none;
+  display: inline-block;
+  min-width: 120px;
 }
 
 #logContainer {

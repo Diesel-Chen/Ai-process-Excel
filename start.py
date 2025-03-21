@@ -70,7 +70,7 @@ def activate_venv():
 def main():
     """主函数"""
     # 检查并激活虚拟环境
-    in_venv = activate_venv()
+    # in_venv = activate_venv()
 
     # 解析命令行参数
     parser = argparse.ArgumentParser(description='市场数据自动获取工具')
@@ -87,10 +87,10 @@ def main():
     # 打印欢迎信息
     print("=" * 50)
     print(f"市场数据自动获取工具 (前后端版本) - {args.mode}模式")
-    if in_venv:
-        print(f"Python环境: 虚拟环境 ({sys.prefix})")
-    else:
-        print(f"Python环境: 系统环境 ({sys.prefix})")
+    # if in_venv:
+    #     print(f"Python环境: 虚拟环境 ({sys.prefix})")
+    # else:
+    #     print(f"Python环境: 系统环境 ({sys.prefix})")
     print("=" * 50)
 
     # 设置Python路径
@@ -100,11 +100,11 @@ def main():
     browser_url = f'http://localhost:{args.port}'
 
     # 在开发模式下且未禁用浏览器，在线程中打开浏览器
-    if args.mode == 'dev' and not args.no_browser:
-        print(f"服务器即将启动，将自动打开浏览器: {browser_url}")
-        browser_thread = threading.Thread(target=open_browser, args=(browser_url,))
-        browser_thread.daemon = True
-        browser_thread.start()
+    # if args.mode == 'dev' and not args.no_browser:
+    #     print(f"服务器即将启动，将自动打开浏览器: {browser_url}")
+    #     browser_thread = threading.Thread(target=open_browser, args=(browser_url,))
+    #     browser_thread.daemon = True
+    #     browser_thread.start()
 
     # 启动应用
     try:

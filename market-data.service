@@ -5,9 +5,9 @@ After=network.target
 [Service]
 User=www-data
 Group=www-data
-WorkingDirectory=/path/to/your/project
+WorkingDirectory=/root/Ai-process-Excel
 # 不再需要单独设置Python环境，start.py会自动检测和激活虚拟环境
-ExecStart=/usr/bin/python3 start.py --mode prod --port 8080 --no-browser
+ExecStart=python start.py --mode dev --port 8080 --no-browser
 Restart=on-failure
 RestartSec=5s
 

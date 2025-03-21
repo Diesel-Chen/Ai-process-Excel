@@ -53,9 +53,11 @@ function startUpdate() {
   const downloadBtn = document.getElementById("downloadBtn");
   const statusMessage = document.getElementById("statusMessage");
   const logContainer = document.getElementById("logContainer");
+  const logSummary = document.getElementById("logSummary");
 
-  // 清空日志容器
+  // 清空日志容器并隐藏摘要
   logContainer.innerHTML = "";
+  logSummary.style.display = "none";
 
   // 更新按钮状态
   updateBtn.disabled = true;
@@ -223,6 +225,30 @@ function downloadExcel() {
   window.location.href = `${apiBaseUrl}/download`;
 }
 
+// 显示统计摘要面板
+function showSummaryPanel(summaryData) {
+  const logSummary = document.getElementById("logSummary");
+  const logSummaryContent = document.getElementById("logSummaryContent");
+
+  logSummaryContent.textContent = summaryData;
+  logSummary.style.display = "block";
+  logContainer.scrollTop = logContainer.scrollHeight;
+}
+
+// 下载统计报告
+function downloadLogSummary() {
+  const content = document.getElementById("logSummaryContent").textContent;
+  const blob = new Blob([content], { type: "text/plain" });
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `数据统计报告_${new Date().toLocaleDateString().replace(/\//g, "-")}.txt`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  window.URL.revokeObjectURL(url);
+}
+
 // 当文档加载完成时，检查URL中是否有API基础路径参数
 document.addEventListener("DOMContentLoaded", function () {
   // 从URL参数中获取API基础路径
@@ -254,7 +280,11 @@ function appendLog(log) {
   // 特殊处理统计摘要
   if (message.includes("===== 爬取统计摘要 =====")) {
     logEntry.className += " summary-header";
-    message = "\n" + message; // 添加额外的换行
+    if (message.includes("===== 爬取统计摘要 =====")) {
+    showSummaryPanel(log.message); // 显示统计摘要面板
+    return; // 跳过常规日志显示
+  }
+  message = "\n" + message; // 添加额外的换行
   } else if (message.startsWith("  ")) {
     logEntry.className += " summary-item";
     // 保持缩进
@@ -314,6 +344,7 @@ style.textContent = `
     .filter-checkbox {
         appearance: none;
         -webkit-appearance: none;
+        -moz-appearance: none;
         width: 16px;
         height: 16px;
         border: 1px solid #d1d5db;

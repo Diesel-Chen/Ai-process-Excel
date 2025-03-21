@@ -470,7 +470,6 @@ class MarketDataAnalyzer:
                         "涨跌幅": cells[6].text.strip() if len(cells) > 6 else "N/A"
                     }
                 results.append(result)
-
             logger.debug(f"成功爬取汇率数据: {len(results)} 条记录")
             return results
 
@@ -545,28 +544,7 @@ class MarketDataAnalyzer:
         Returns:
             bool: 是否更新了数据
         """
-        # 标准化日期字符串（移除前导零）的辅助函数
-        def normalize_date_str(date_str):
-            if not date_str:
-                return ""
-            # 替换所有的分隔符为标准分隔符
-            date_str = date_str.replace('-', '/').replace('.', '/')
-            parts = date_str.split('/')
-            if len(parts) == 3:
-                # 确保年份在前
-                if len(parts[0]) == 4:  # 年份在第一位
-                    year, month, day = parts
-                elif len(parts[2]) == 4:  # 年份在最后
-                    month, day, year = parts
-                else:
-                    return date_str  # 无法识别的格式
-
-                # 移除前导零
-                month = month.lstrip('0') if month.startswith('0') and len(month) > 1 else month
-                day = day.lstrip('0') if day.startswith('0') and len(day) > 1 else day
-                return f"{year}/{month}/{day}"
-            return date_str
-
+        # 检查数据是否为空
         if not data or len(data) < 1:
             logger.error(f"{sheet_name}: 数据不足，无法写入")
             return False
@@ -579,7 +557,6 @@ class MarketDataAnalyzer:
 
         # 获取最后一行的日期值
         last_date_value = worksheet.cell(row=last_row, column=1).value
-        last_date_str = ""
 
         # 解析现有日期和新日期为datetime对象，用于比较
         new_date_obj = None
@@ -596,25 +573,10 @@ class MarketDataAnalyzer:
         except Exception as e:
             logger.warning(f"{sheet_name}: 解析新日期 '{new_date_str}' 失败: {str(e)}")
 
+
         # 解析现有日期
         if isinstance(last_date_value, datetime):
             last_date_obj = last_date_value
-            # 根据不同sheet格式化日期字符串
-            if sheet_name == 'SOFR':
-                last_date_str = last_date_value.strftime('%m/%d/%Y')
-                # 去掉月份和日期的前导零
-                month, day, year = last_date_str.split('/')
-                month = month.lstrip('0') if month.startswith('0') and len(month) > 1 else month
-                day = day.lstrip('0') if day.startswith('0') and len(day) > 1 else day
-                last_date_str = f"{month}/{day}/{year}"
-            elif sheet_name == 'Shibor':
-                last_date_str = last_date_value.strftime('%Y-%m-%d')
-            else:
-                # 标准格式，但需要处理前导零问题
-                if platform.system() == "Windows":
-                    last_date_str = last_date_value.strftime('%Y/%#m/%d')
-                else:  # Linux/macOS
-                    last_date_str = last_date_value.strftime('%Y/%-m/%d')
         else:
             try:
                 if last_date_value:
@@ -628,37 +590,31 @@ class MarketDataAnalyzer:
                         year, month, day = map(int, str(last_date_value).split('/'))
                         last_date_obj = datetime(year, month, day)
             except Exception as e:
-                logger.warning(f"{sheet_name}: 解析现有日期 '{last_date_value}' 失败: {str(e)}")
-        # logger.debug(f"{sheet_name}: 新日期={new_date_str}, 旧日期={last_date_str}, 新日期对象={new_date_obj}, 旧日期对象={last_date_obj}")
+                logger.warning(
+                    f"{sheet_name}: 解析最后一行日期 '{last_date_value}' 失败: {str(e)}"
+                    f"last_date_value 的值是: {last_date_value}，类型是: {type(last_date_value)} "
+                )
 
-        # 优先使用datetime对象比较，更可靠
-        if new_date_obj and last_date_obj and new_date_obj.date() == last_date_obj.date():
-            # logger.debug(f"{sheet_name}: 日期对象比较相同 ({new_date_obj.date()} == {last_date_obj.date()})，数据已是最新，无需更新")
+        if new_date_obj is None or last_date_obj is None:
+            # 若有日期对象为 None，则记录警告信息
+            logger.warning(
+                f"{sheet_name}: 日期对象比较失败，请重试后不行联系管理员。"
+                f"last_date_value 的值是: {last_date_value}，类型是: {type(last_date_value)} "
+                f"new_date_str 的值是: {new_date_str}，类型是: {type(new_date_str)}"
+            )
+        # 若两个日期对象都不为 None，则比较日期
+        elif new_date_obj.date() == last_date_obj.date():
+            # 若日期相同，则记录调试信息并返回 False
+            logger.debug(
+                f"{sheet_name}: 日期对象比较相同 ({new_date_obj.date()} == {last_date_obj.date()})，数据已是最新，无需更新"
+            )
             return False
-        elif new_date_obj and last_date_obj:
-            # logger.debug(f"{sheet_name}: 日期对象比较不同 ({new_date_obj.date()} != {last_date_obj.date()})，需要更新数据")
-            return True
-
-        # 如果对象比较失败，尝试标准化字符串后比较
-        if not (new_date_obj and last_date_obj):
-            norm_new_date = normalize_date_str(new_date_str)
-            norm_last_date = normalize_date_str(last_date_str)
-
-            logger.debug(f"{sheet_name}: 标准化后 - 新日期={norm_new_date}, 旧日期={norm_last_date}")
-
-            if norm_new_date == norm_last_date:
-                logger.debug(f"{sheet_name}: 标准化字符串比较相同，数据已是最新，无需更新")
-                return False
-            else:
-                logger.debug(f"{sheet_name}: 标准化字符串比较不同，需要更新数据")
-                return True
 
         # 在数据列表中查找最后一行日期的位置
         last_date_index = -1
 
         # 使用datetime对象比较查找
         if last_date_obj:
-            logger.debug(f"{sheet_name}: 使用日期对象比较查找最后一行日期")
             for i, item in enumerate(data):
                 item_date_str = item.get("日期", "")
                 try:
@@ -672,25 +628,12 @@ class MarketDataAnalyzer:
                         continue
 
                     if item_date.date() == last_date_obj.date():
-                        logger.debug(f"{sheet_name}: 找到最后一行日期(对象比较): {item_date} 在索引 {i}")
+                        logger.debug(f"{sheet_name}: 找到最后一行日期(对象比较): {item_date} 在索引 {i} 即将插入{i}个新数据 刷新最后一行数据")
                         last_date_index = i
                         break
                 except Exception as e:
                     logger.debug(f"{sheet_name}: 解析日期 '{item_date_str}' 失败: {str(e)}")
                     continue
-
-        # 如果对象比较失败，尝试标准化字符串比较
-        if last_date_index == -1:
-            logger.debug(f"{sheet_name}: 使用标准化字符串比较查找最后一行日期")
-            norm_last_date = normalize_date_str(last_date_str)
-            for i, item in enumerate(data):
-                item_date_str = item.get("日期", "")
-                norm_item_date = normalize_date_str(item_date_str)
-                logger.debug(f"{sheet_name}: 比较 {norm_item_date} 与 {norm_last_date}")
-                if norm_item_date == norm_last_date:
-                    logger.debug(f"{sheet_name}: 找到最后一行日期(字符串比较): {item_date_str} 在索引 {i}")
-                    last_date_index = i
-                    break
 
         # 如果找到了最后一行日期
         if last_date_index != -1:
@@ -703,15 +646,13 @@ class MarketDataAnalyzer:
                 # 插入新行
                 target_row = last_row + (last_date_index - i)
                 self.write_single_daily_row(worksheet, data[i], target_row, sheet_name)
-                logger.info(f"{sheet_name}: 已在第 {target_row} 行插入新数据")
+                logger.debug(f"{sheet_name}: 已在第 {target_row} 行插入新数据")
 
             return True
         else:
-            # 如果没找到最后一行日期，则直接添加最新数据
-            target_row = last_row + 1
-            self.write_single_daily_row(worksheet, data[0], target_row, sheet_name)
-            logger.info(f"{sheet_name}: 已在第 {target_row} 行添加新数据")
-            return True
+            # 如果没找到最后一行日期，记录日志
+            logger.error(f"{sheet_name}: 爬取的最新数据并没有匹配上现有数据，无法更新.现有数据{data}，最后一行日期{last_date_obj}")
+            return False
 
     def write_single_daily_row(self, worksheet, row_data, row_num, sheet_name):
         """
@@ -940,6 +881,9 @@ class MarketDataAnalyzer:
                             updated_sheets.append(sheet_name)
                             logger.info(f"已在工作表 {sheet_name} 的第 {last_row} 行插入新数据")
 
+                # 打印统计摘要
+                stats.print_summary()
+
                 # 保存Excel文件
                 if excel_updates:
                     logger.info(f"开始保存Excel文件: {excel_path}")
@@ -952,8 +896,7 @@ class MarketDataAnalyzer:
                 else:
                     logger.info("所有工作表数据均已是最新，Excel文件未做修改")
 
-                # 打印统计摘要
-                stats.print_summary()
+
 
                 return results
             except FileNotFoundError as e:

@@ -129,6 +129,8 @@ def crawler_thread_func():
     except Exception as e:
         logger.error(f"爬虫线程异常: {str(e)}")
     finally:
+        # 等待日志全部写入队列
+        time.sleep(5)
         crawler_running = False
         logger.info("数据爬取完成")
 
