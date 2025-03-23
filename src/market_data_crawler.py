@@ -24,6 +24,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 from webdriver_manager.firefox import GeckoDriverManager
 from webdriver_manager.microsoft import EdgeChromiumDriverManager
 from selenium.common.exceptions import StaleElementReferenceException, TimeoutException, WebDriverException
+from selenium.webdriver import ActionChains
 
 import time
 import concurrent.futures
@@ -147,140 +148,127 @@ class MarketDataAnalyzer:
         """
         优化的WebDriver初始化方法
         """
-        if MarketDataAnalyzer._driver is not None:
-            return
+        print("初始化WebDriver...")
+        logger.info("开始初始化WebDriver")
 
-        if MarketDataAnalyzer._driver_lock:
-            # 等待其他线程初始化完成
-            wait_count = 0
-            while MarketDataAnalyzer._driver is None and wait_count < 30:
-                time.sleep(0.5)
-                wait_count += 1
-            if MarketDataAnalyzer._driver is not None:
-                return
+        import os  # 确保os模块在函数内可用
+        system = platform.system()
 
-        MarketDataAnalyzer._driver_lock = True
+        # 通用选项
+        options = webdriver.ChromeOptions()
+        options.add_argument('--headless')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--no-sandbox')
+        options.add_argument('--log-level=3')  # 仅显示致命错误
+        options.add_argument('--start-maximized')
+        options.add_argument('--ignore-certificate-errors')
+        options.add_argument('--disable-extensions')
+        options.add_argument('--disable-blink-features=AutomationControlled')  # 关闭自动化标识
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option('useAutomationExtension', False)
+        options.page_load_strategy = 'eager'  # 当DOM就绪时就开始操作，不等待图片等资源
+
+        # 添加随机用户代理
+        user_agent = self.get_random_user_agent()
+        options.add_argument(f'user-agent={user_agent}')
+        logger.debug(f"使用用户代理: {user_agent}")
 
         try:
-            # 检测操作系统
-            system = platform.system()
-            logger.info(f"检测到操作系统: {system}")
+            # 首先尝试使用Chrome
+            from webdriver_manager.chrome import ChromeDriverManager
 
-            # 设置通用选项
-            options = webdriver.ChromeOptions()
-            options.add_argument('--headless')
-            options.add_argument('--disable-gpu')
-            options.add_argument('--no-sandbox')
-            options.add_argument('--disable-dev-shm-usage')
-            options.add_argument(f'user-agent={self.get_random_user_agent()}')
+            driver_path = ChromeDriverManager().install()
+            service = Service(executable_path=driver_path)
 
-            # 抑制浏览器日志输出
-            options.add_argument('--log-level=3')  # 仅显示致命错误
-            options.add_experimental_option('excludeSwitches', ['enable-logging'])  # 禁用DevTools日志
+            # 创建driver并修改navigator.webdriver
+            self.__class__._driver = webdriver.Chrome(service=service, options=options)
 
-            # 禁用WebGL相关警告
-            options.add_argument('--disable-webgl')
-            options.add_argument('--disable-webgl2')
+            # 执行JavaScript修改webdriver标识
+            self.__class__._driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+                'source': '''
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined
+                    });
+                    // 修改语言标识以增加随机性
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['zh-CN', 'zh', 'en-US', 'en']
+                    });
+                    // 修改硬件并发线程
+                    Object.defineProperty(navigator, 'hardwareConcurrency', {
+                        get: () => 8
+                    });
+                '''
+            })
 
-            # 增加连接池设置
-            options.add_argument('--proxy-server="direct://"')
-            options.add_argument('--proxy-bypass-list=*')
+            logger.info("成功初始化 Chrome WebDriver")
+        except Exception as e:
+            logger.warning(f"Chrome WebDriver 初始化失败: {str(e)}")
 
-            # 设置页面加载策略为eager，加快加载速度
-            options.page_load_strategy = 'eager'
-
-            # 禁用图片加载，提高性能
-            prefs = {
-                "profile.managed_default_content_settings.images": 2,
-                "profile.default_content_setting_values.notifications": 2,
-                "profile.default_content_settings.popups": 2
-            }
-            options.add_experimental_option("prefs", prefs)
-
-            # 根据操作系统选择合适的驱动
             try:
-                # 首先尝试Chrome
-                driver_path = ChromeDriverManager().install()
+                # 尝试使用Edge
+                from webdriver_manager.microsoft import EdgeChromiumDriverManager
+
+                edge_options = webdriver.EdgeOptions()
+                for arg in options.arguments:
+                    edge_options.add_argument(arg)
+                edge_options.use_chromium = True
+                edge_options.page_load_strategy = 'eager'
+
+                driver_path = EdgeChromiumDriverManager().install()
 
                 # 创建一个空的日志文件对象来抑制输出
                 if system == "Windows":
-                    import os
                     null_output = open(os.devnull, 'w')
                     service = Service(executable_path=driver_path, log_output=null_output)
                 else:
                     service = Service(executable_path=driver_path)
 
-                MarketDataAnalyzer._driver = webdriver.Chrome(service=service, options=options)
-                logger.info("成功初始化 Chrome WebDriver")
+                self.__class__._driver = webdriver.Edge(service=service, options=edge_options)
+
+                # 执行JavaScript修改webdriver标识
+                self.__class__._driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+                    'source': '''
+                        Object.defineProperty(navigator, 'webdriver', {
+                            get: () => undefined
+                        });
+                        // 修改语言标识以增加随机性
+                        Object.defineProperty(navigator, 'languages', {
+                            get: () => ['zh-CN', 'zh', 'en-US', 'en']
+                        });
+                    '''
+                })
+
+                logger.info("成功初始化 Edge WebDriver")
             except Exception as e:
-                logger.warning(f"Chrome WebDriver 初始化失败: {str(e)}")
+                logger.warning(f"Edge WebDriver 初始化失败: {str(e)}")
 
                 try:
-                    # 尝试Edge
-                    edge_options = webdriver.EdgeOptions()
+                    # 最后尝试Firefox
+                    from webdriver_manager.firefox import GeckoDriverManager
+
+                    firefox_options = webdriver.FirefoxOptions()
                     for arg in options.arguments:
-                        edge_options.add_argument(arg)
-                    edge_options.page_load_strategy = 'eager'
+                        if not arg.startswith('--disable-dev-shm-usage') and not arg.startswith('--no-sandbox'):
+                            firefox_options.add_argument(arg)
+                    firefox_options.page_load_strategy = 'eager'
+                    firefox_options.add_argument('--log-level=3')  # 仅显示致命错误
 
-                    # 添加Edge特有的日志抑制
-                    edge_options.add_experimental_option('excludeSwitches', ['enable-logging'])
+                    # Firefox特有的性能设置
+                    firefox_profile = webdriver.FirefoxProfile()
+                    firefox_profile.set_preference("dom.webdriver.enabled", False)
+                    firefox_profile.set_preference('useAutomationExtension', False)
+                    firefox_profile.set_preference("general.useragent.override", user_agent)
+                    firefox_profile.update_preferences()
+                    firefox_options.profile = firefox_profile
 
-                    # 添加相同的性能优化设置
-                    edge_options.add_experimental_option("prefs", prefs)
+                    driver_path = GeckoDriverManager().install()
 
-                    driver_path = EdgeChromiumDriverManager().install()
-
-                    # 创建一个空的日志文件对象来抑制输出
-                    if system == "Windows":
-                        import os
-                        null_output = open(os.devnull, 'w')
-                        service = Service(executable_path=driver_path, log_output=null_output)
-                    else:
-                        service = Service(executable_path=driver_path)
-
-                    MarketDataAnalyzer._driver = webdriver.Edge(service=service, options=edge_options)
-                    logger.info("成功初始化 Edge WebDriver")
+                    service = Service(executable_path=driver_path)
+                    self.__class__._driver = webdriver.Firefox(service=service, options=firefox_options)
+                    logger.info("成功初始化 Firefox WebDriver")
                 except Exception as e:
-                    logger.warning(f"Edge WebDriver 初始化失败: {str(e)}")
-
-                    try:
-                        # 最后尝试Firefox
-                        firefox_options = webdriver.FirefoxOptions()
-                        for arg in options.arguments:
-                            if not arg.startswith('--disable-dev-shm-usage') and not arg.startswith('--no-sandbox'):
-                                firefox_options.add_argument(arg)
-                        firefox_options.page_load_strategy = 'eager'
-                        firefox_options.add_argument('--log-level=3')  # 仅显示致命错误
-
-                        # Firefox特有的性能设置
-                        firefox_options.set_preference("permissions.default.image", 2)
-                        firefox_options.set_preference("dom.popup_maximum", 0)
-
-                        # 禁用Firefox的日志
-                        firefox_options.set_preference("devtools.console.stdout.content", False)
-
-                        driver_path = GeckoDriverManager().install()
-
-                        # 创建一个空的日志文件对象来抑制输出
-                        if system == "Windows":
-                            import os
-                            null_output = open(os.devnull, 'w')
-                            service = Service(executable_path=driver_path, log_output=null_output)
-                        else:
-                            service = Service(executable_path=driver_path)
-
-                        MarketDataAnalyzer._driver = webdriver.Firefox(service=service, options=firefox_options)
-                        logger.info("成功初始化 Firefox WebDriver")
-                    except Exception as e:
-                        logger.error(f"所有WebDriver初始化失败: {str(e)}")
-                        raise Exception("无法初始化任何WebDriver")
-
-        except Exception as e:
-            logger.error(f"WebDriver初始化失败: {str(e)}")
-            MarketDataAnalyzer._driver_lock = False
-            raise
-
-        MarketDataAnalyzer._driver_lock = False
+                    logger.error(f"所有WebDriver初始化失败: {str(e)}")
+                    raise
 
     @classmethod
     def get_driver(cls):
@@ -319,9 +307,58 @@ class MarketDataAnalyzer:
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.81 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.81 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:93.0) Gecko/20100101 Firefox/93.0",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:93.0) Gecko/20100101 Firefox/93.0"
         ]
         return random.choice(user_agents)
+
+    def simulate_human_behavior(self, driver):
+        """模拟人类浏览行为，减少被检测为机器人的可能性"""
+        try:
+            # 随机等待
+            time.sleep(random.uniform(1, 3))
+
+            # 随机滚动
+            for _ in range(random.randint(2, 5)):
+                scroll_amount = random.randint(300, 700)
+                driver.execute_script(f"window.scrollBy(0, {scroll_amount});")
+                time.sleep(random.uniform(0.5, 1.5))
+
+            # 随机移动鼠标(使用ActionChains)
+            if random.random() > 0.5:  # 50%概率执行
+                action = ActionChains(driver)
+                for _ in range(random.randint(1, 3)):
+                    action.move_by_offset(random.randint(-100, 100), random.randint(-100, 100))
+                    action.perform()
+                    time.sleep(random.uniform(0.1, 0.5))
+
+            logger.debug("已执行人类行为模拟")
+        except Exception as e:
+            logger.warning(f"模拟人类行为时出错: {str(e)}")
+
+    def handle_cloudflare(self, driver, timeout=30):
+        """处理Cloudflare防护页面"""
+        try:
+            start_time = time.time()
+            while time.time() - start_time < timeout:
+                if "Just a moment..." in driver.title or "Checking your browser" in driver.page_source:
+                    logger.info("检测到Cloudflare验证，等待通过...")
+                    # 等待一段时间并模拟几次滚动
+                    self.simulate_human_behavior(driver)
+                    time.sleep(random.uniform(2, 3))
+                else:
+                    logger.info("Cloudflare验证已通过或不存在")
+                    return True  # 验证通过或不存在验证
+            logger.warning("Cloudflare验证超时")
+            return False  # 超时，验证失败
+        except Exception as e:
+            logger.error(f"处理Cloudflare验证时出错: {str(e)}")
+            return False
+
     def format_exchange_rate_date(self,raw_date):
         # 解析中文月份
         dt = datetime.strptime(raw_date, "%m月 %d, %Y")
@@ -413,72 +450,145 @@ class MarketDataAnalyzer:
     @log_execution_time
     @retry_on_timeout
     def crawl_exchange_rate(self, url):
-        """
-        使用爬虫直接获取汇率数据
-        """
+        """优化后的汇率数据爬取方法（带详细调试日志）"""
+        driver = self.get_driver()
+        logger.info(f"🌐 开始爬取汇率数据：{url}")
+
         try:
-            headers = {
-                'User-Agent': self.get_random_user_agent(),
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'zh-CN,zh;q=0.8,en-US;q=0.5,en;q=0.3',
-                'Connection': 'keep-alive',
-                'Referer': 'https://cn.investing.com/',
-                'Upgrade-Insecure-Requests': '1',
-                'Cache-Control': 'max-age=0',
-            }
+            # # 添加随机延迟，防止请求过于规律
+            # wait_time = random.uniform(2, 5)
+            # logger.debug(f"等待 {wait_time:.2f} 秒后发起请求...")
+            # time.sleep(wait_time)
 
-            # 添加随机延时
-            time.sleep(1 + random.random() * 2)  # 减少等待时间
+            # 设置超时策略
+            driver.set_page_load_timeout(20)
+            driver.implicitly_wait(5)
+            wait = WebDriverWait(driver, 25, poll_frequency=1)
 
-            # 发送请求
-            logger.debug(f"正在请求URL: {url}")
-            response = requests.get(url, headers=headers, timeout=10)  # 减少超时时间
-            response.raise_for_status()
+            try:
+                logger.debug("🚦 尝试加载页面...")
+                driver.get(url)
+            except TimeoutException:
+                logger.warning("⏰ 页面加载超时，强制停止")
+                driver.execute_script("window.stop();")
 
-            soup = BeautifulSoup(response.text, 'html.parser')
-
-            # 选择表格的前10行数据，而不是只选择前2行
-            rows = soup.select('tr.historical-data-v2_price__atUfP')[:10]
-
-            if len(rows) < 1:
-                logger.error(f"汇率数据: 未找到足够的数据行，请检查HTML结构或反爬机制")
+            # 检查并处理Cloudflare防护
+            if not self.handle_cloudflare(driver):
+                logger.error("无法通过Cloudflare验证")
                 return None
 
-            results = []
-            for row in rows:
-                date = row.find('time').text.strip()
-                cells = row.find_all('td')
+            # 模拟人类行为
+            self.simulate_human_behavior(driver)
 
-                if url == 'https://cn.investing.com/rates-bonds/u.s.-10-year-bond-yield-historical-data':
-                    # 10年期美债数据
-                    result = {
-                        "日期": self.format_exchange_rate_date(date),
+            # 调试：保存页面快照
+            if logger.isEnabledFor(logging.DEBUG):
+                with open("page_source.html", "w", encoding="utf-8") as f:
+                    f.write(driver.page_source)
+                driver.save_screenshot("debug_snapshot.png")
+
+            # 表格定位策略优化
+            try:
+                logger.debug("🔍 定位数据表格...")
+                table = wait.until(EC.presence_of_element_located((
+                    By.XPATH, '//table[contains(@class, "freeze-column")]'
+                )))
+                logger.debug("✅ 表格定位成功")
+            except TimeoutException as e:
+                logger.error("❌ 表格定位失败，可能原因：")
+                logger.error("1. 页面结构已变更")
+                logger.error("2. 反爬机制触发")
+                logger.error("3. 网络请求被拦截")
+                raise
+
+            # 数据行获取策略
+            def _load_rows(driver):
+                """带滚动加载的行获取函数"""
+                last_height = driver.execute_script("return document.body.scrollHeight")
+                for _ in range(3):  # 最多滚动3次
+                    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                    time.sleep(1.5)
+                    new_height = driver.execute_script("return document.body.scrollHeight")
+                    if new_height == last_height:
+                        break
+                    last_height = new_height
+
+                rows = driver.find_elements(
+                    By.CSS_SELECTOR,
+                    "tr.historical-data-v2_price__atUfP:not(:empty)"
+                )
+                return rows if len(rows) > 5 else None  # 至少需要5行数据
+
+            try:
+                logger.debug("🔄 尝试获取数据行...")
+                rows = wait.until(
+                    lambda d: _load_rows(d) or (_load_rows(d) and False),
+                    message="数据行加载失败"
+                )
+                logger.info(f"📊 获取到 {len(rows)} 行有效数据")
+            except TimeoutException:
+                logger.error("⏰ 数据行加载超时，可能原因：")
+                logger.error("1. 滚动加载未触发")
+                logger.error("2. 反爬验证未通过")
+                return None
+
+            # 数据解析优化
+            results = []
+            required_columns = {"收盘", "开盘", "高", "低"}
+            for idx, row in enumerate(rows[:100]):  # 限制处理前100行
+                try:
+                    # 可视化检查
+                    if not row.is_displayed():
+                        driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth'});", row)
+                        time.sleep(0.3)
+
+                    # 动态定位元素
+                    date_cell = row.find_element(By.CSS_SELECTOR, "td:first-child time")
+                    cells = row.find_elements(By.CSS_SELECTOR, "td:not([style*='display:none'])")
+
+                    # 数据校验
+                    if len(cells) < 5:
+                        logger.debug(f"跳过第 {idx} 行，数据列不足")
+                        continue
+
+                    # 构建数据记录
+                    record = {
+                        "日期": self.format_exchange_rate_date(date_cell.text),
                         "收盘": cells[1].text.strip(),
                         "开盘": cells[2].text.strip(),
                         "高": cells[3].text.strip(),
-                        "低": cells[4].text.strip(),
-                        "涨跌幅": cells[5].text.strip() if len(cells) > 5 else "N/A"
+                        "低": cells[4].text.strip()
                     }
-                else:
-                    # 构造返回结果
-                    result = {
-                        "日期": self.format_exchange_rate_date(date),
-                        "收盘": cells[1].text.strip(),
-                        "开盘": cells[2].text.strip(),
-                        "高": cells[3].text.strip(),
-                        "低": cells[4].text.strip(),
-                        "涨跌幅": cells[6].text.strip() if len(cells) > 6 else "N/A"
-                    }
-                results.append(result)
-            logger.debug(f"成功爬取汇率数据: {len(results)} 条记录")
+
+                    # 动态处理涨跌幅
+                    if len(cells) >= 7:
+                        record["涨跌幅"] = cells[6].text.strip()
+                    elif "涨跌幅" in required_columns:
+                        logger.warning(f"第 {idx} 行缺少涨跌幅数据")
+
+                    results.append(record)
+
+                except StaleElementReferenceException:
+                    logger.debug(f"第 {idx} 行元素失效，重新获取中...")
+                    rows = driver.find_elements(
+                        By.CSS_SELECTOR,
+                        "tr.historical-data-v2_price__atUfP:not(:empty)"
+                    )
+                    continue
+                except Exception as e:
+                    logger.debug(f"第 {idx} 行解析异常：{str(e)}")
+                    continue
+
+            logger.info(f"✅ 成功解析 {results} 条有效记录")
             return results
 
-        except requests.RequestException as e:
-            logger.error(f"汇率数据请求失败: {str(e)}")
-            return None
         except Exception as e:
-            logger.error(f"汇率数据处理异常: {str(e)}")
+            logger.error(f"❌ 爬取过程异常：{str(e)}")
+            logger.debug(f"异常堆栈：", exc_info=True)
             return None
+        finally:
+            driver.quit()
+            logger.debug("🛑 浏览器实例已关闭")
+
 
     def find_last_row(self, sheet):
         """
