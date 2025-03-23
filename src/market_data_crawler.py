@@ -924,196 +924,221 @@ class MarketDataAnalyzer:
 
     def update_excel(self):
         """
-        更新现有Excel文件，追加数据到对应sheet的最后一行（优化版）
+        更新现有Excel文件，追加数据到对应sheet的最后一行（串行执行版本）
         """
         stats = CrawlStats()  # 创建统计对象
 
         try:
             results = {}
-            all_futures = {}  # 存储所有的Future对象
-
+            
             # 创建进度跟踪器
             total_tasks = len(config.CURRENCY_PAIRS) + len(config.DAILY_DATA_PAIRS) + len(config.MONTHLY_DATA_PAIRS)
             completed_tasks = 0
 
             # 打印任务总览
             logger.info("=" * 50)
-            logger.info("🚀 开始数据爬取任务")
+            logger.info("🚀 开始数据爬取任务（串行执行模式）")
             logger.info("=" * 50)
             logger.info(f"📊 汇率数据: {len(config.CURRENCY_PAIRS)} 项")
             logger.info(f"📈 日频数据: {len(config.DAILY_DATA_PAIRS)} 项")
             logger.info(f"📅 月度数据: {len(config.MONTHLY_DATA_PAIRS)} 项")
             logger.info(f"🔄 总任务数: {total_tasks} 项")
             logger.info("=" * 50)
+            
+            # 初始化一次WebDriver实例
+            logger.info("⚙️ 初始化WebDriver实例...")
+            driver = self._init_driver()
+            
+            # 更新进度的辅助函数
+            def update_progress(sheet_name, data_type, success=True, error_msg=None):
+                nonlocal completed_tasks
+                completed_tasks += 1
+                progress = int(completed_tasks / total_tasks * 100)
+                progress_bar = "█" * (progress // 5) + "░" * (20 - progress // 5)
+                
+                if success:
+                    logger.info(f"✅ [{progress:3d}%] |{progress_bar}| {sheet_name} ({data_type})")
+                elif error_msg:
+                    logger.error(f"❌ [{progress:3d}%] |{progress_bar}| {sheet_name} ({data_type}): {error_msg}")
+                else:
+                    logger.warning(f"⚠️ [{progress:3d}%] |{progress_bar}| {sheet_name} ({data_type}): 数据为空")
 
-            # 创建一个线程池，用于并行处理所有数据
-            max_workers = min(total_tasks, 20)
-            logger.info(f"⚙️ 启动并行处理 (最大线程数: {max_workers})")
+            # 1. 处理汇率数据（不需要WebDriver）
+            logger.info("开始爬取汇率数据...")
+            for pair, url in config.CURRENCY_PAIRS.items():
+                try:
+                    data = self.crawl_exchange_rate(url)
+                    if data:
+                        results[pair] = data
+                        stats.add_success(pair)
+                        update_progress(pair, "currency")
+                    else:
+                        stats.add_failure(pair, "爬取返回空数据")
+                        update_progress(pair, "currency", False)
+                except Exception as e:
+                    stats.add_failure(pair, str(e))
+                    update_progress(pair, "currency", False, str(e))
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # 1. 并行处理汇率数据（不需要WebDriver）
-                for pair, url in config.CURRENCY_PAIRS.items():
-                    future = executor.submit(self.crawl_exchange_rate, url)
-                    all_futures[future] = {"type": "currency", "name": pair}
+            # 2. 处理日频数据（需要WebDriver）
+            logger.info("开始爬取日频数据...")
+            for sheet_name, info in config.DAILY_DATA_PAIRS.items():
+                try:
+                    # 直接调用爬虫方法，而不是通过_crawl_with_webdriver
+                    crawler_method = getattr(self, info['crawler'])
+                    data = crawler_method(info['url'])
+                    
+                    if data:
+                        results[sheet_name] = data
+                        stats.add_success(sheet_name)
+                        update_progress(sheet_name, "daily")
+                    else:
+                        stats.add_failure(sheet_name, "爬取返回空数据")
+                        update_progress(sheet_name, "daily", False)
+                except Exception as e:
+                    stats.add_failure(sheet_name, str(e))
+                    update_progress(sheet_name, "daily", False, str(e))
 
-                # 2. 并行处理日频数据（需要WebDriver）
-                for sheet_name, info in config.DAILY_DATA_PAIRS.items():
-                    future = executor.submit(self._crawl_with_webdriver, sheet_name, info)
-                    all_futures[future] = {"type": "daily", "name": sheet_name}
-
-                # 3. 并行处理月度数据（需要WebDriver）
-                for sheet_name, info in config.MONTHLY_DATA_PAIRS.items():
-                    future = executor.submit(self._crawl_with_webdriver, sheet_name, info, is_monthly=True)
-                    all_futures[future] = {"type": "monthly", "name": sheet_name}
-
-                # 等待所有任务完成并收集结果
-                for future in concurrent.futures.as_completed(all_futures):
-                    info = all_futures[future]
-                    sheet_name = info["name"]
-                    data_type = info["type"]
-
-                    # 更新进度
-                    completed_tasks += 1
-                    progress = int(completed_tasks / total_tasks * 100)
-                    progress_bar = "█" * (progress // 5) + "░" * (20 - progress // 5)
-
-                    try:
-                        data = future.result()
-                        if data:
-                            # 对于月度数据，只保留第一行
-                            if data_type == "monthly" and isinstance(data, list) and len(data) > 0:
-                                results[sheet_name] = data[0]
-                            else:
-                                results[sheet_name] = data
-                            stats.add_success(sheet_name)
-                            logger.info(f"✅ [{progress:3d}%] |{progress_bar}| {sheet_name} ({data_type})")
+            # 3. 处理月度数据（需要WebDriver）
+            logger.info("开始爬取月度数据...")
+            for sheet_name, info in config.MONTHLY_DATA_PAIRS.items():
+                try:
+                    # 直接调用爬虫方法，而不是通过_crawl_with_webdriver
+                    crawler_method = getattr(self, info['crawler'])
+                    data = crawler_method(info['url'])
+                    
+                    if data:
+                        # 对于月度数据，只保留第一行
+                        if isinstance(data, list) and len(data) > 0:
+                            results[sheet_name] = data[0]
                         else:
-                            stats.add_failure(sheet_name, "爬取返回空数据")
-                            logger.warning(f"⚠️ [{progress:3d}%] |{progress_bar}| {sheet_name} ({data_type}): 数据为空")
-                    except Exception as e:
-                        stats.add_failure(sheet_name, str(e))
-                        logger.error(f"❌ [{progress:3d}%] |{progress_bar}| {sheet_name} ({data_type}): {str(e)}")
+                            results[sheet_name] = data
+                        stats.add_success(sheet_name)
+                        update_progress(sheet_name, "monthly")
+                    else:
+                        stats.add_failure(sheet_name, "爬取返回空数据")
+                        update_progress(sheet_name, "monthly", False)
+                except Exception as e:
+                    stats.add_failure(sheet_name, str(e))
+                    update_progress(sheet_name, "monthly", False, str(e))
 
-            # 关闭所有WebDriver实例
-            self.close_all_drivers()
+            # 关闭WebDriver实例
+            logger.info("爬取任务完成，关闭WebDriver实例...")
+            self.close_driver()
+            
             logger.info("=" * 50)
             logger.info("🏁 数据爬取完成，准备更新Excel文件...")
 
             # 4. 更新Excel文件
             logger.info("开始更新Excel文件...")
-            try:
-                excel_path = config.EXCEL_OUTPUT_PATH
-                logger.info(f"📂 打开Excel文件: {os.path.basename(excel_path)}")
+            excel_path = config.EXCEL_OUTPUT_PATH
+            logger.info(f"📂 打开Excel文件: {os.path.basename(excel_path)}")
 
-                # 如果文件不存在，直接抛出错误
-                if not os.path.exists(excel_path):
-                    raise FileNotFoundError(f"Excel文件不存在: {excel_path}。请确保文件存在于正确的位置。")
+            # 如果文件不存在，直接抛出错误
+            if not os.path.exists(excel_path):
+                raise FileNotFoundError(f"Excel文件不存在: {excel_path}。请确保文件存在于正确的位置。")
 
-                wb = load_workbook(excel_path)
+            wb = load_workbook(excel_path)
 
-                updated_sheets = []  # 记录已更新的工作表
+            updated_sheets = []  # 记录已更新的工作表
 
-                # 更新各个sheet
-                excel_updates = []
-                for sheet_name, data in results.items():
-                    if not data:
-                        stats.add_skipped(sheet_name, "数据为空")
+            # 更新各个sheet
+            excel_updates = []
+            for sheet_name, data in results.items():
+                if not data:
+                    stats.add_skipped(sheet_name, "数据为空")
+                    continue
+
+                if sheet_name not in wb.sheetnames:
+                    stats.add_skipped(sheet_name, "工作表不存在")
+                    logger.warning(f"⚠️ 工作表 {sheet_name} 不存在，跳过更新")
+                    continue
+
+                ws = wb[sheet_name]
+
+                # 查找最后一行数据
+                last_row = self.find_last_row(ws)
+
+
+                # 根据数据类型选择不同的处理方法
+                if sheet_name in config.MONTHLY_DATA_PAIRS:
+                    # 月度数据处理
+                    new_date = data.get("日期", "")
+                    if not new_date:
+                        stats.add_skipped(sheet_name, "数据中缺少日期字段")
                         continue
 
-                    if sheet_name not in wb.sheetnames:
-                        stats.add_skipped(sheet_name, "工作表不存在")
-                        logger.warning(f"⚠️ 工作表 {sheet_name} 不存在，跳过更新")
-                        continue
+                    # 获取最后一行的日期值
+                    last_date_value = ws.cell(row=last_row, column=1).value
 
-                    ws = wb[sheet_name]
+                    # 对Import and Export进行特殊处理
+                    if sheet_name == 'Import and Export':
+                        # 即使日期相同，也需要检查数据是否从"-"更新为具体数值
+                        need_update = False
 
-                    # 查找最后一行数据
-                    last_row = self.find_last_row(ws)
-
-
-                    # 根据数据类型选择不同的处理方法
-                    if sheet_name in config.MONTHLY_DATA_PAIRS:
-                        # 月度数据处理
-                        new_date = data.get("日期", "")
-                        if not new_date:
-                            stats.add_skipped(sheet_name, "数据中缺少日期字段")
-                            continue
-
-                        # 获取最后一行的日期值
-                        last_date_value = ws.cell(row=last_row, column=1).value
-
-                        # 对Import and Export进行特殊处理
-                        if sheet_name == 'Import and Export':
-                            # 即使日期相同，也需要检查数据是否从"-"更新为具体数值
-                            need_update = False
-
-                            # 如果日期不同，直接更新
-                            if str(last_date_value) != str(new_date):
-                                need_update = True
-                            else:
-                                # 日期相同，检查各列数据是否有从"-"更新为具体数值的情况
-                                columns = config.COLUMN_DEFINITIONS[sheet_name]
-                                for col_idx, col_name in enumerate(columns, 1):
-                                    if col_name == '日期':
-                                        continue
-
-                                    # 获取Excel中的当前值
-                                    current_value = ws.cell(row=last_row, column=col_idx).value
-                                    # 获取新数据中的值
-                                    new_value = data.get(col_name, '')
-
-                                    # 检查是否从"-"更新为具体数值
-                                    if (current_value == '-' or current_value == '') and new_value != '-' and new_value != '':
-                                        need_update = True
-                                        break
-
-                            if need_update:
-                                self.write_monthly_data(ws, data, last_row)  # 覆盖当前行
-                                excel_updates.append(sheet_name)
-                                updated_sheets.append(sheet_name)
-                                logger.info(f"📝 更新 {sheet_name}: {new_date}")
-                            else:
-                                logger.info(f"✓ {sheet_name} 数据已是最新")
+                        # 如果日期不同，直接更新
+                        if str(last_date_value) != str(new_date):
+                            need_update = True
                         else:
-                            # 其他月度数据的常规处理
-                            if str(last_date_value) != str(new_date):
-                                self.write_monthly_data(ws, data, last_row + 1)
-                                excel_updates.append(sheet_name)
-                                updated_sheets.append(sheet_name)
-                                logger.info(f"📝 更新 {sheet_name}: {new_date}")
-                            else:
-                                logger.info(f"✓ {sheet_name} 数据已是最新")
-                    else:
-                        # 日频数据处理（包括汇率数据）
-                        update_result = self.write_daily_data(ws, data, last_row, sheet_name)
-                        if update_result:
+                            # 日期相同，检查各列数据是否有从"-"更新为具体数值的情况
+                            columns = config.COLUMN_DEFINITIONS[sheet_name]
+                            for col_idx, col_name in enumerate(columns, 1):
+                                if col_name == '日期':
+                                    continue
+
+                                # 获取Excel中的当前值
+                                current_value = ws.cell(row=last_row, column=col_idx).value
+                                # 获取新数据中的值
+                                new_value = data.get(col_name, '')
+
+                                # 检查是否从"-"更新为具体数值
+                                if (current_value == '-' or current_value == '') and new_value != '-' and new_value != '':
+                                    need_update = True
+                                    break
+
+                        if need_update:
+                            self.write_monthly_data(ws, data, last_row)  # 覆盖当前行
                             excel_updates.append(sheet_name)
                             updated_sheets.append(sheet_name)
-                            logger.info(f"📝 更新 {sheet_name}")
-
-                # 打印统计摘要
-                logger.info("=" * 50)
-                stats.print_summary()
-
-                # 保存Excel文件
-                if excel_updates:
-                    logger.info(f"💾 保存Excel文件: {os.path.basename(excel_path)}")
-                    try:
-                        wb.save(excel_path)
-                        logger.info(f"✅ Excel文件保存成功，已更新 {len(updated_sheets)} 个工作表")
-                    except Exception as e:
-                        logger.error(f"❌ 保存Excel文件时出错: {str(e)}")
-                        return False
+                            logger.info(f"📝 更新 {sheet_name}: {new_date}")
+                        else:
+                            logger.info(f"✓ {sheet_name} 数据已是最新")
+                    else:
+                        # 其他月度数据的常规处理
+                        if str(last_date_value) != str(new_date):
+                            self.write_monthly_data(ws, data, last_row + 1)
+                            excel_updates.append(sheet_name)
+                            updated_sheets.append(sheet_name)
+                            logger.info(f"📝 更新 {sheet_name}: {new_date}")
+                        else:
+                            logger.info(f"✓ {sheet_name} 数据已是最新")
                 else:
-                    logger.info("ℹ️ 所有工作表数据均已是最新，Excel文件未做修改")
+                    # 日频数据处理（包括汇率数据）
+                    update_result = self.write_daily_data(ws, data, last_row, sheet_name)
+                    if update_result:
+                        excel_updates.append(sheet_name)
+                        updated_sheets.append(sheet_name)
+                        logger.info(f"📝 更新 {sheet_name}")
 
-                return results
-            except FileNotFoundError as e:
-                logger.error(str(e))
-                raise  # 重新抛出错误，不尝试创建新文件
-            except Exception as e:
-                logger.error(f"❌ 更新Excel过程中出错: {str(e)}", exc_info=True)
-                return False
+            # 打印统计摘要
+            logger.info("=" * 50)
+            stats.print_summary()
+
+            # 保存Excel文件
+            if excel_updates:
+                logger.info(f"💾 保存Excel文件: {os.path.basename(excel_path)}")
+                try:
+                    wb.save(excel_path)
+                    logger.info(f"✅ Excel文件保存成功，已更新 {len(updated_sheets)} 个工作表")
+                except Exception as e:
+                    logger.error(f"❌ 保存Excel文件时出错: {str(e)}")
+                    return False
+            else:
+                logger.info("ℹ️ 所有工作表数据均已是最新，Excel文件未做修改")
+
+            return results
+        except Exception as e:
+            logger.error(f"❌ 更新Excel过程中出错: {str(e)}", exc_info=True)
+            return False
         finally:
             # 确保关闭所有WebDriver实例
             self.close_all_drivers()
