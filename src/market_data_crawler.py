@@ -268,6 +268,8 @@ class MarketDataAnalyzer:
             from webdriver_manager.chrome import ChromeDriverManager
 
             driver_path = ChromeDriverManager().install()
+            # driver_path='/root/.wdm/drivers/chromedriver/linux64/134.0.6998.165/chromedriver-linux64/chromedriver'
+
             service = Service(executable_path=driver_path)
 
             # 创建driver并修改navigator.webdriver
@@ -945,7 +947,7 @@ class MarketDataAnalyzer:
             logger.info("=" * 50)
 
             # 创建一个线程池，用于并行处理所有数据
-            max_workers = min(total_tasks, 5)
+            max_workers = min(total_tasks, 20)
             logger.info(f"⚙️ 启动并行处理 (最大线程数: {max_workers})")
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
