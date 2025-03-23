@@ -216,29 +216,18 @@ class CrawlStats:
 
 class MarketDataAnalyzer:
     _driver = None
-    _driver_lock = False  # 简单锁，防止并发初始化
-    _driver_pool = {}  # 用于存储线程ID到WebDriver实例的映射
-    _driver_pool_lock = threading.RLock()  # 用于保护driver_pool的线程安全锁
+    _driver_lock = threading.RLock()  # 简单锁，防止并发初始化
 
     def __init__(self):
         print("初始化市场数据分析器...")
         # 不再预先初始化WebDriver，而是在需要时按需创建
 
-    def _init_driver(self, thread_id=None):
+    def _init_driver(self):
         """
-        优化的WebDriver初始化方法，支持为每个线程创建独立的WebDriver实例
-
-        Args:
-            thread_id: 可选的线程ID，用于在driver_pool中标识该WebDriver实例
-
-        Returns:
-            WebDriver实例
+        优化的WebDriver初始化方法
         """
-        if thread_id is None:
-            thread_id = threading.get_ident()
-
-        print(f"为线程 {thread_id} 初始化WebDriver...")
-        logger.info(f"为线程 {thread_id} 开始初始化WebDriver")
+        print("初始化WebDriver...")
+        logger.info("开始初始化WebDriver")
 
         import os  # 确保os模块在函数内可用
         system = platform.system()
@@ -252,6 +241,7 @@ class MarketDataAnalyzer:
         options.add_argument('--start-maximized')
         options.add_argument('--ignore-certificate-errors')
         options.add_argument('--disable-extensions')
+        options.add_argument('--blink-settings=imagesEnabled=false')
         options.add_argument('--disable-blink-features=AutomationControlled')  # 关闭自动化标识
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
@@ -292,9 +282,9 @@ class MarketDataAnalyzer:
                 '''
             })
 
-            logger.info(f"线程 {thread_id} 成功初始化 Chrome WebDriver")
+            logger.info("成功初始化 Chrome WebDriver")
         except Exception as e:
-            logger.warning(f"线程 {thread_id} Chrome WebDriver 初始化失败: {str(e)}")
+            logger.warning(f"Chrome WebDriver 初始化失败: {str(e)}")
 
             try:
                 # 尝试使用Edge
@@ -330,9 +320,9 @@ class MarketDataAnalyzer:
                     '''
                 })
 
-                logger.info(f"线程 {thread_id} 成功初始化 Edge WebDriver")
+                logger.info("成功初始化 Edge WebDriver")
             except Exception as e:
-                logger.warning(f"线程 {thread_id} Edge WebDriver 初始化失败: {str(e)}")
+                logger.warning(f"Edge WebDriver 初始化失败: {str(e)}")
 
                 try:
                     # 最后尝试Firefox
@@ -357,76 +347,39 @@ class MarketDataAnalyzer:
 
                     service = Service(executable_path=driver_path)
                     driver = webdriver.Firefox(service=service, options=firefox_options)
-                    logger.info(f"线程 {thread_id} 成功初始化 Firefox WebDriver")
+                    logger.info("成功初始化 Firefox WebDriver")
                 except Exception as e:
-                    logger.error(f"线程 {thread_id} 所有WebDriver初始化失败: {str(e)}")
+                    logger.error(f"所有WebDriver初始化失败: {str(e)}")
                     raise
-
-        # 将创建的driver实例添加到pool中
-        with self._driver_pool_lock:
-            self._driver_pool[thread_id] = driver
 
         return driver
 
     def get_driver(self):
         """
-        获取当前线程的WebDriver实例，如果不存在则初始化
+        获取WebDriver实例，如果不存在则初始化
 
         Returns:
             WebDriver实例
         """
-        thread_id = threading.get_ident()
+        with self._driver_lock:
+            if self._driver is None:
+                self._driver = self._init_driver()
 
-        with self._driver_pool_lock:
-            driver = self._driver_pool.get(thread_id)
+            return self._driver
 
-            # 检查驱动是否存在且有效
-            if driver is not None:
-                try:
-                    driver.current_url  # 尝试访问属性以检查驱动是否仍然有效
-                except (WebDriverException, Exception) as e:
-                    logger.warning(f"线程 {thread_id} 的WebDriver已失效，重新初始化: {str(e)}")
-                    driver = None
-
-            # 如果不存在或无效，创建新的
-            if driver is None:
-                driver = self._init_driver(thread_id)
-
-            return driver
-
-    def close_driver(self, thread_id=None):
+    def close_driver(self):
         """
-        关闭指定线程的WebDriver实例
-
-        Args:
-            thread_id: 可选的线程ID，默认为当前线程
+        关闭WebDriver实例
         """
-        if thread_id is None:
-            thread_id = threading.get_ident()
-
-        with self._driver_pool_lock:
-            driver = self._driver_pool.get(thread_id)
-            if driver:
+        with self._driver_lock:
+            if self._driver:
                 try:
-                    driver.quit()
-                    logger.info(f"线程 {thread_id} 的WebDriver已关闭")
+                    self._driver.quit()
+                    logger.info("WebDriver已关闭")
                 except Exception as e:
-                    logger.warning(f"关闭线程 {thread_id} 的WebDriver时出错: {str(e)}")
+                    logger.warning(f"关闭WebDriver时出错: {str(e)}")
                 finally:
-                    self._driver_pool.pop(thread_id, None)
-
-    def close_all_drivers(self):
-        """
-        关闭所有WebDriver实例
-        """
-        with self._driver_pool_lock:
-            for thread_id, driver in list(self._driver_pool.items()):
-                try:
-                    driver.quit()
-                    logger.info(f"线程 {thread_id} 的WebDriver已关闭")
-                except Exception as e:
-                    logger.warning(f"关闭线程 {thread_id} 的WebDriver时出错: {str(e)}")
-            self._driver_pool.clear()
+                    self._driver = None
 
     def get_random_user_agent(self):
         user_agents = [
@@ -586,9 +539,8 @@ class MarketDataAnalyzer:
         try:
 
             # 设置超时策略
-            driver.set_page_load_timeout(20)
-            driver.implicitly_wait(5)
-            wait = WebDriverWait(driver, 25, poll_frequency=1)
+            driver.set_page_load_timeout(30)
+            wait = WebDriverWait(driver, 25, poll_frequency=2)
 
             try:
                 logger.debug("尝试加载页面...")
@@ -601,7 +553,7 @@ class MarketDataAnalyzer:
             try:
                 logger.debug("定位数据表格...")
                 table = wait.until(EC.presence_of_element_located((
-                    By.XPATH, '//table[contains(@class, "freeze-column")]'
+                    By.CSS_SELECTOR, 'table.freeze-column-w-1'
                 )))
                 logger.debug("表格定位成功")
             except TimeoutException as e:
@@ -694,10 +646,6 @@ class MarketDataAnalyzer:
             logger.error(f"爬取过程异常：{str(e)}")
             logger.debug(f"异常堆栈：", exc_info=True)
             return None
-        finally:
-            driver.quit()
-            logger.debug("浏览器实例已关闭")
-
 
     def find_last_row(self, sheet):
         """
@@ -930,7 +878,7 @@ class MarketDataAnalyzer:
 
         try:
             results = {}
-            
+
             # 创建进度跟踪器
             total_tasks = len(config.CURRENCY_PAIRS) + len(config.DAILY_DATA_PAIRS) + len(config.MONTHLY_DATA_PAIRS)
             completed_tasks = 0
@@ -944,18 +892,18 @@ class MarketDataAnalyzer:
             logger.info(f"📅 月度数据: {len(config.MONTHLY_DATA_PAIRS)} 项")
             logger.info(f"🔄 总任务数: {total_tasks} 项")
             logger.info("=" * 50)
-            
+
             # 初始化一次WebDriver实例
             logger.info("⚙️ 初始化WebDriver实例...")
             driver = self._init_driver()
-            
+
             # 更新进度的辅助函数
             def update_progress(sheet_name, data_type, success=True, error_msg=None):
                 nonlocal completed_tasks
                 completed_tasks += 1
                 progress = int(completed_tasks / total_tasks * 100)
                 progress_bar = "█" * (progress // 5) + "░" * (20 - progress // 5)
-                
+
                 if success:
                     logger.info(f"✅ [{progress:3d}%] |{progress_bar}| {sheet_name} ({data_type})")
                 elif error_msg:
@@ -986,7 +934,7 @@ class MarketDataAnalyzer:
                     # 直接调用爬虫方法，而不是通过_crawl_with_webdriver
                     crawler_method = getattr(self, info['crawler'])
                     data = crawler_method(info['url'])
-                    
+
                     if data:
                         results[sheet_name] = data
                         stats.add_success(sheet_name)
@@ -1005,7 +953,7 @@ class MarketDataAnalyzer:
                     # 直接调用爬虫方法，而不是通过_crawl_with_webdriver
                     crawler_method = getattr(self, info['crawler'])
                     data = crawler_method(info['url'])
-                    
+
                     if data:
                         # 对于月度数据，只保留第一行
                         if isinstance(data, list) and len(data) > 0:
@@ -1024,7 +972,7 @@ class MarketDataAnalyzer:
             # 关闭WebDriver实例
             logger.info("爬取任务完成，关闭WebDriver实例...")
             self.close_driver()
-            
+
             logger.info("=" * 50)
             logger.info("🏁 数据爬取完成，准备更新Excel文件...")
 
@@ -1139,34 +1087,6 @@ class MarketDataAnalyzer:
         except Exception as e:
             logger.error(f"❌ 更新Excel过程中出错: {str(e)}", exc_info=True)
             return False
-        finally:
-            # 确保关闭所有WebDriver实例
-            self.close_all_drivers()
-
-    def _crawl_with_webdriver(self, sheet_name, info, is_monthly=False):
-        """
-        使用WebDriver爬取数据的辅助方法，每个线程使用独立的WebDriver实例
-
-        Args:
-            sheet_name: 工作表名称
-            info: 包含爬虫方法和URL的信息字典
-            is_monthly: 是否为月度数据
-
-        Returns:
-            爬取的数据
-        """
-        try:
-            # 获取当前线程的WebDriver
-            driver = self.get_driver()
-
-            # 调用对应的爬虫方法
-            crawler_method = getattr(self, info['crawler'])
-            data = crawler_method(info['url'])
-
-            return data
-        except Exception as e:
-            logger.error(f"爬取 {sheet_name} 数据时出错: {str(e)}")
-            raise
 
     @log_execution_time
     @retry_on_timeout
