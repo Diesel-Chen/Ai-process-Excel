@@ -29,6 +29,7 @@ from selenium.webdriver import ActionChains
 
 import time
 import concurrent.futures
+from functools import wraps
 
 # 在脚本开头导入并配置连接池
 from urllib3.poolmanager import PoolManager
@@ -47,61 +48,63 @@ class CustomPoolManager(PoolManager):
 # 替换默认连接池管理器
 urllib3.PoolManager = CustomPoolManager
 
-# 设置日志
-logging.basicConfig(
-    level=getattr(logging, config.LOG_LEVEL),
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    datefmt='%H:%M:%S'
-)
+# 配置日志
 logger = logging.getLogger(__name__)
 
-# 禁用第三方库的日志
-logging.getLogger('urllib3').setLevel(logging.WARNING)
-logging.getLogger('selenium').setLevel(logging.WARNING)
-logging.getLogger('webdriver_manager').setLevel(logging.WARNING)
+# 添加彩色日志输出
+class ColoredFormatter(logging.Formatter):
+    """自定义彩色日志格式化器"""
 
-# 创建一个统计对象来跟踪成功和失败的爬取
-class CrawlStats:
-    def __init__(self):
-        self.success = []
-        self.failed = []
-        self.skipped = []
+    COLORS = {
+        'DEBUG': '\033[94m',     # 蓝色
+        'INFO': '\033[92m',      # 绿色
+        'WARNING': '\033[93m',   # 黄色
+        'ERROR': '\033[91m',     # 红色
+        'CRITICAL': '\033[91m\033[1m',  # 红色加粗
+        'RESET': '\033[0m'       # 重置颜色
+    }
 
-    def add_success(self, name):
-        self.success.append(name)
+    def format(self, record):
+        log_message = super().format(record)
+        level_name = record.levelname
+        if level_name in self.COLORS:
+            return f"{self.COLORS[level_name]}{log_message}{self.COLORS['RESET']}"
+        return log_message
 
-    def add_failure(self, name, reason):
-        self.failed.append((name, reason))
+def setup_logging(debug=False):
+    """设置日志配置"""
+    level = logging.DEBUG if debug else logging.INFO
 
-    def add_skipped(self, name, reason):
-        self.skipped.append((name, reason))
+    # 清除现有的处理器
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
 
-    def print_summary(self):
-        logger.info("\n===== 爬取统计摘要 =====")
+    # 设置日志级别
+    logger.setLevel(level)
 
-        # 成功项
-        if self.success:
-            logger.info(f"成功: {len(self.success)} 项")
-            # 将成功项分组显示，每行最多显示 4 个项目
-            success_items = self.success[:]
-            while success_items:
-                group = success_items[:4]
-                success_items = success_items[4:]
-                logger.info(f"  {', '.join(group)}")
+    # 创建控制台处理器
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(level)
 
-        # 失败项
-        if self.failed:
-            logger.info(f"\n失败: {len(self.failed)} 项")
-            for name, reason in self.failed:
-                logger.error(f"  {name}: {reason}")
+    # 创建格式化器
+    if os.name == 'posix':  # 在类Unix系统上启用彩色输出
+        formatter = ColoredFormatter('%(message)s')
+    else:
+        formatter = logging.Formatter('%(message)s')
 
-        # 跳过项
-        if self.skipped:
-            logger.info(f"\n跳过: {len(self.skipped)} 项")
-            for name, reason in self.skipped:
-                logger.warning(f"  {name}: {reason}")
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
+    # 文件处理器 - 详细日志保存到文件
+    file_handler = logging.FileHandler('market_data_crawler.log')
+    file_handler.setLevel(level)
+    file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(file_formatter)
+    logger.addHandler(file_handler)
 
 def log_execution_time(func):
+    """记录函数执行时间的装饰器"""
+    @wraps(func)
     def wrapper(*args, **kwargs):
         start_time = time.time()
         result = func(*args, **kwargs)
@@ -115,8 +118,33 @@ def log_execution_time(func):
         return result
     return wrapper
 
+def format_error_message(error):
+    """格式化错误信息，提取关键部分"""
+    error_str = str(error)
+
+    # 如果是Selenium错误，提取主要信息
+    if "Session info" in error_str:
+        # 提取主要错误信息，去除堆栈跟踪
+        main_error = error_str.split('Stacktrace:')[0].strip()
+        return main_error
+
+    # 对于其他错误，直接返回错误信息
+    return error_str
+
+def log_error(message, error=None, show_traceback=False):
+    """统一的错误日志记录函数"""
+    if error:
+        error_msg = format_error_message(error)
+        logger.error(f"{message}: {error_msg}")
+        # 只在调试模式下记录完整堆栈
+        if show_traceback:
+            logger.debug(f"详细错误信息:", exc_info=True)
+    else:
+        logger.error(message)
+
 def retry_on_timeout(func):
     """重试装饰器，用于处理超时情况"""
+    @wraps(func)
     def wrapper(*args, **kwargs):
         max_retries = 3
         retry_count = 0
@@ -132,9 +160,59 @@ def retry_on_timeout(func):
                 # 每次重试增加等待时间
                 time.sleep(2 * retry_count)
             except Exception as e:
-                logger.error(f"{func.__name__} 发生非超时错误: {str(e)}")
+                log_error(f"{func.__name__} 发生错误", e, show_traceback=False)
                 return None
     return wrapper
+
+# 禁用第三方库的日志
+logging.getLogger('urllib3').setLevel(logging.WARNING)
+logging.getLogger('selenium').setLevel(logging.WARNING)
+logging.getLogger('webdriver_manager').setLevel(logging.WARNING)
+
+# 创建一个统计对象来跟踪成功和失败的爬取
+class CrawlStats:
+    """爬取统计信息类，用于记录爬取成功、失败和跳过的数据"""
+
+    def __init__(self):
+        self.success = []
+        self.failure = {}
+        self.skipped = {}
+
+    def add_success(self, name):
+        self.success.append(name)
+
+    def add_failure(self, name, reason):
+        self.failure[name] = reason
+
+    def add_skipped(self, name, reason):
+        self.skipped[name] = reason
+
+    def print_summary(self):
+        """打印统计摘要"""
+        logger.info("📊 爬取统计摘要")
+        logger.info("=" * 50)
+
+        # 成功数据
+        if self.success:
+            logger.info(f"✅ 成功: {len(self.success)} 项")
+            # 每行最多显示4个项目
+            for i in range(0, len(self.success), 4):
+                chunk = self.success[i:i+4]
+                logger.info(f"   {', '.join(chunk)}")
+
+        # 失败数据
+        if self.failure:
+            logger.info(f"\n❌ 失败: {len(self.failure)} 项")
+            for name, reason in self.failure.items():
+                logger.error(f"   {name}: {reason}")
+
+        # 跳过数据
+        if self.skipped:
+            logger.info(f"\n⏭️ 跳过: {len(self.skipped)} 项")
+            for name, reason in self.skipped.items():
+                logger.warning(f"   {name}: {reason}")
+
+        logger.info("=" * 50)
 
 class MarketDataAnalyzer:
     _driver = None
@@ -405,6 +483,8 @@ class MarketDataAnalyzer:
         except Exception as e:
             logger.error(f"处理Cloudflare验证时出错: {str(e)}")
             return False
+
+        return True  # 没有Cloudflare验证页面，直接返回成功
 
     def format_exchange_rate_date(self,raw_date):
         # 解析中文月份
@@ -848,66 +928,80 @@ class MarketDataAnalyzer:
 
         try:
             results = {}
-            all_futures = []
-            future_to_sheet = {}
+            all_futures = {}  # 存储所有的Future对象
 
-            # 创建线程池，用于所有数据的并行处理
-            logger.info("开始并行爬取所有数据...")
-            with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+            # 创建进度跟踪器
+            total_tasks = len(config.CURRENCY_PAIRS) + len(config.DAILY_DATA_PAIRS) + len(config.MONTHLY_DATA_PAIRS)
+            completed_tasks = 0
+
+            # 打印任务总览
+            logger.info("=" * 50)
+            logger.info("🚀 开始数据爬取任务")
+            logger.info("=" * 50)
+            logger.info(f"📊 汇率数据: {len(config.CURRENCY_PAIRS)} 项")
+            logger.info(f"📈 日频数据: {len(config.DAILY_DATA_PAIRS)} 项")
+            logger.info(f"📅 月度数据: {len(config.MONTHLY_DATA_PAIRS)} 项")
+            logger.info(f"🔄 总任务数: {total_tasks} 项")
+            logger.info("=" * 50)
+
+            # 创建一个线程池，用于并行处理所有数据
+            max_workers = min(total_tasks, 5)
+            logger.info(f"⚙️ 启动并行处理 (最大线程数: {max_workers})")
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 # 1. 并行处理汇率数据（不需要WebDriver）
-                logger.info("提交汇率数据爬取任务...")
                 for pair, url in config.CURRENCY_PAIRS.items():
-                    logger.info(f"正在分析 {pair} 的数据...")
                     future = executor.submit(self.crawl_exchange_rate, url)
-                    future_to_sheet[future] = pair
-                    all_futures.append(future)
+                    all_futures[future] = {"type": "currency", "name": pair}
 
                 # 2. 并行处理日频数据（需要WebDriver）
-                logger.info("提交日频数据爬取任务...")
                 for sheet_name, info in config.DAILY_DATA_PAIRS.items():
-                    logger.info(f"正在分析日频数据 {sheet_name}...")
                     future = executor.submit(self._crawl_with_webdriver, sheet_name, info)
-                    future_to_sheet[future] = sheet_name
-                    all_futures.append(future)
+                    all_futures[future] = {"type": "daily", "name": sheet_name}
 
                 # 3. 并行处理月度数据（需要WebDriver）
-                logger.info("提交月度数据爬取任务...")
                 for sheet_name, info in config.MONTHLY_DATA_PAIRS.items():
-                    logger.info(f"正在分析月度数据 {sheet_name}...")
                     future = executor.submit(self._crawl_with_webdriver, sheet_name, info, is_monthly=True)
-                    future_to_sheet[future] = sheet_name
-                    all_futures.append(future)
+                    all_futures[future] = {"type": "monthly", "name": sheet_name}
 
                 # 等待所有任务完成并收集结果
-                logger.info(f"等待所有 {len(all_futures)} 个爬取任务完成...")
                 for future in concurrent.futures.as_completed(all_futures):
-                    sheet_name = future_to_sheet[future]
+                    info = all_futures[future]
+                    sheet_name = info["name"]
+                    data_type = info["type"]
+
+                    # 更新进度
+                    completed_tasks += 1
+                    progress = int(completed_tasks / total_tasks * 100)
+                    progress_bar = "█" * (progress // 5) + "░" * (20 - progress // 5)
+
                     try:
                         data = future.result()
                         if data:
                             # 对于月度数据，只保留第一行
-                            if sheet_name in config.MONTHLY_DATA_PAIRS and isinstance(data, list) and len(data) > 0:
+                            if data_type == "monthly" and isinstance(data, list) and len(data) > 0:
                                 results[sheet_name] = data[0]
                             else:
                                 results[sheet_name] = data
                             stats.add_success(sheet_name)
-                            logger.info(f"✓ 成功获取 {sheet_name} 数据")
+                            logger.info(f"✅ [{progress:3d}%] |{progress_bar}| {sheet_name} ({data_type})")
                         else:
                             stats.add_failure(sheet_name, "爬取返回空数据")
-                            logger.warning(f"{sheet_name}: 爬取返回空数据")
+                            logger.warning(f"⚠️ [{progress:3d}%] |{progress_bar}| {sheet_name} ({data_type}): 数据为空")
                     except Exception as e:
                         stats.add_failure(sheet_name, str(e))
-                        logger.error(f"{sheet_name}: 处理数据时出错: {str(e)}")
+                        logger.error(f"❌ [{progress:3d}%] |{progress_bar}| {sheet_name} ({data_type}): {str(e)}")
 
             # 关闭所有WebDriver实例
-            logger.info("所有爬取任务已完成，关闭WebDriver实例...")
             self.close_all_drivers()
+            logger.info("=" * 50)
+            logger.info("🏁 数据爬取完成，准备更新Excel文件...")
 
             # 4. 更新Excel文件
             logger.info("开始更新Excel文件...")
             try:
                 excel_path = config.EXCEL_OUTPUT_PATH
-                logger.info(f"尝试打开Excel文件: {excel_path}")
+                logger.info(f"📂 打开Excel文件: {os.path.basename(excel_path)}")
 
                 # 如果文件不存在，直接抛出错误
                 if not os.path.exists(excel_path):
@@ -922,12 +1016,11 @@ class MarketDataAnalyzer:
                 for sheet_name, data in results.items():
                     if not data:
                         stats.add_skipped(sheet_name, "数据为空")
-                        logger.warning(f"工作表 {sheet_name} 的数据为空，跳过更新")
                         continue
 
                     if sheet_name not in wb.sheetnames:
                         stats.add_skipped(sheet_name, "工作表不存在")
-                        logger.warning(f"工作表 {sheet_name} 不存在，跳过更新")
+                        logger.warning(f"⚠️ 工作表 {sheet_name} 不存在，跳过更新")
                         continue
 
                     ws = wb[sheet_name]
@@ -969,7 +1062,6 @@ class MarketDataAnalyzer:
 
                                     # 检查是否从"-"更新为具体数值
                                     if (current_value == '-' or current_value == '') and new_value != '-' and new_value != '':
-                                        logger.info(f"{sheet_name}: 列 '{col_name}' 从 '{current_value}' 更新为 '{new_value}'")
                                         need_update = True
                                         break
 
@@ -977,47 +1069,48 @@ class MarketDataAnalyzer:
                                 self.write_monthly_data(ws, data, last_row)  # 覆盖当前行
                                 excel_updates.append(sheet_name)
                                 updated_sheets.append(sheet_name)
-                                logger.info(f"已在工作表 {sheet_name} 的第 {last_row+1} 行插入新数据: {new_date}")
+                                logger.info(f"📝 更新 {sheet_name}: {new_date}")
                             else:
-                                logger.info(f"工作表 {sheet_name} 的数据已是最新，无需更新")
+                                logger.info(f"✓ {sheet_name} 数据已是最新")
                         else:
                             # 其他月度数据的常规处理
                             if str(last_date_value) != str(new_date):
                                 self.write_monthly_data(ws, data, last_row + 1)
                                 excel_updates.append(sheet_name)
                                 updated_sheets.append(sheet_name)
-                                logger.info(f"已在工作表 {sheet_name} 的第 {last_row+1} 行插入新数据: {new_date}")
+                                logger.info(f"📝 更新 {sheet_name}: {new_date}")
                             else:
-                                logger.info(f"工作表 {sheet_name} 的数据已是最新，无需更新")
+                                logger.info(f"✓ {sheet_name} 数据已是最新")
                     else:
                         # 日频数据处理（包括汇率数据）
                         update_result = self.write_daily_data(ws, data, last_row, sheet_name)
                         if update_result:
                             excel_updates.append(sheet_name)
                             updated_sheets.append(sheet_name)
-                            logger.info(f"已在工作表 {sheet_name} 的第 {last_row} 行插入新数据")
+                            logger.info(f"📝 更新 {sheet_name}")
 
                 # 打印统计摘要
+                logger.info("=" * 50)
                 stats.print_summary()
 
                 # 保存Excel文件
                 if excel_updates:
-                    logger.info(f"开始保存Excel文件: {excel_path}")
+                    logger.info(f"💾 保存Excel文件: {os.path.basename(excel_path)}")
                     try:
                         wb.save(excel_path)
-                        logger.info(f"✅ Excel文件保存成功，已更新以下工作表: {', '.join(updated_sheets)}")
+                        logger.info(f"✅ Excel文件保存成功，已更新 {len(updated_sheets)} 个工作表")
                     except Exception as e:
-                        logger.error(f"保存Excel文件时出错: {str(e)}")
+                        logger.error(f"❌ 保存Excel文件时出错: {str(e)}")
                         return False
                 else:
-                    logger.info("所有工作表数据均已是最新，Excel文件未做修改")
+                    logger.info("ℹ️ 所有工作表数据均已是最新，Excel文件未做修改")
 
                 return results
             except FileNotFoundError as e:
                 logger.error(str(e))
                 raise  # 重新抛出错误，不尝试创建新文件
             except Exception as e:
-                logger.error(f"更新Excel过程中出错: {str(e)}", exc_info=True)
+                logger.error(f"❌ 更新Excel过程中出错: {str(e)}", exc_info=True)
                 return False
         finally:
             # 确保关闭所有WebDriver实例
@@ -1089,7 +1182,8 @@ class MarketDataAnalyzer:
                     # 实时获取当前行元素
                     cells = row.find_elements(By.XPATH, './/td[not(contains(@style,"none"))]')
 
-                    # 过滤无效行
+
+                    # 数据校验
                     if len(cells) < 10:
                         logger.debug(f"Steel price: 跳过无效行，列数：{len(cells)}")
                         continue
@@ -1101,15 +1195,15 @@ class MarketDataAnalyzer:
                     # 动态映射字段
                     item = {
                         "日期": self.format_stee_price_date(cells[0].get_attribute('textContent').strip()),
-                        "本日": cells[1].get_attribute('textContent').strip(),
-                        "昨日": cells[2].get_attribute('textContent').strip(),
-                        "日环比": cells[3].get_attribute('textContent').strip(),
-                        "上周": cells[4].get_attribute('textContent').strip(),
-                        "周环比": cells[5].get_attribute('textContent').strip(),
-                        "上月度": cells[6].get_attribute('textContent').strip(),
-                        "与上月比": cells[7].get_attribute('textContent').strip(),
-                        "去年同期": cells[8].get_attribute('textContent').strip(),
-                        "与去年比": cells[9].get_attribute('textContent').strip(),
+                        "本日": cells[1].text.strip(),
+                        "昨日": cells[2].text.strip(),
+                        "日环比": cells[3].text.strip(),
+                        "上周": cells[4].text.strip(),
+                        "周环比": cells[5].text.strip(),
+                        "上月度": cells[6].text.strip(),
+                        "与上月比": cells[7].text.strip(),
+                        "去年同期": cells[8].text.strip(),
+                        "与去年比": cells[9].text.strip(),
                     }
                     data.append(item)
 
@@ -1147,7 +1241,7 @@ class MarketDataAnalyzer:
             driver.set_page_load_timeout(20)
             driver.get(url)
 
-            # 使用显式等待替代固定等待
+            # 使用显式等待，减少固定等待时间
             wait = WebDriverWait(driver, 10)
             table = wait.until(EC.presence_of_element_located((By.ID, 'shibor-tendays-show-data')))
 
@@ -1198,7 +1292,7 @@ class MarketDataAnalyzer:
             driver.set_page_load_timeout(20)
             driver.get(url)
 
-            # 使用显式等待替代固定等待
+            # 使用显式等待，减少固定等待时间
             wait = WebDriverWait(driver, 10)
             table = wait.until(EC.presence_of_element_located((By.ID, 'lpr-ten-days-table')))
 
@@ -1257,7 +1351,7 @@ class MarketDataAnalyzer:
             driver.set_page_load_timeout(20)
             driver.get(url)
 
-            # 使用显式等待替代固定等待
+            # 使用显式等待，减少固定等待时间
             wait = WebDriverWait(driver, 10)
             table = wait.until(EC.presence_of_element_located((By.ID, 'pr_id_1-table')))
 
@@ -1311,7 +1405,7 @@ class MarketDataAnalyzer:
             driver.set_page_load_timeout(30)
             driver.get(url)
 
-            # 使用显式等待替代固定等待，增加超时时间
+            # 使用显式等待，减少固定等待时间，增加超时时间
             wait = WebDriverWait(driver, 15)
 
             # 使用更精确的选择器
@@ -1368,7 +1462,7 @@ class MarketDataAnalyzer:
             driver.set_page_load_timeout(30)
             driver.get(url)
 
-            # 使用显式等待替代固定等待
+            # 使用显式等待，减少固定等待时间
             wait = WebDriverWait(driver, 15)
 
             # 使用更精确的选择器
@@ -1418,7 +1512,7 @@ class MarketDataAnalyzer:
             driver.set_page_load_timeout(30)
             driver.get(url)
 
-            # 使用显式等待替代固定等待
+            # 使用显式等待，减少固定等待时间
             wait = WebDriverWait(driver, 15)
             table = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-model")))
 
@@ -1468,7 +1562,7 @@ class MarketDataAnalyzer:
             driver.set_page_load_timeout(30)
             driver.get(url)
 
-            # 使用显式等待替代固定等待
+            # 使用显式等待，减少固定等待时间
             wait = WebDriverWait(driver, 15)
             table = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-model")))
 
@@ -1525,7 +1619,7 @@ class MarketDataAnalyzer:
             driver.set_page_load_timeout(30)
             driver.get(url)
 
-            # 使用显式等待替代固定等待
+            # 使用显式等待，减少固定等待时间
             wait = WebDriverWait(driver, 15)
             table = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-model")))
 
@@ -1581,7 +1675,7 @@ class MarketDataAnalyzer:
             driver.set_page_load_timeout(30)
             driver.get(url)
 
-            # 使用显式等待替代固定等待
+            # 使用显式等待，减少固定等待时间
             wait = WebDriverWait(driver, 15)
             table = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-model")))
 
@@ -1631,7 +1725,7 @@ class MarketDataAnalyzer:
             driver.set_page_load_timeout(30)
             driver.get(url)
 
-            # 使用显式等待替代固定等待
+            # 使用显式等待，减少固定等待时间
             wait = WebDriverWait(driver, 15)
             table = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-model")))
 
@@ -1690,7 +1784,7 @@ class MarketDataAnalyzer:
             driver.set_page_load_timeout(30)
             driver.get(url)
 
-            # 使用显式等待替代固定等待
+            # 使用显式等待，减少固定等待时间
             wait = WebDriverWait(driver, 15)
             table = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-model")))
 
@@ -1741,7 +1835,7 @@ class MarketDataAnalyzer:
             driver.set_page_load_timeout(30)
             driver.get(url)
 
-            # 使用显式等待替代固定等待
+            # 使用显式等待，减少固定等待时间
             wait = WebDriverWait(driver, 15)
             table = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-model")))
 
@@ -1780,38 +1874,31 @@ class MarketDataAnalyzer:
             return None
 
 if __name__ == "__main__":
-    # 初始化分析器
-    analyzer = MarketDataAnalyzer()
-    print("=" * 50)
-    print("市场数据爬取工具")
-    print("=" * 50)
+    def main():
+        """主函数"""
+        import argparse
 
-    try:
+        parser = argparse.ArgumentParser(description='市场数据爬取工具')
+        parser.add_argument('--debug', action='store_true', help='启用调试日志')
+        args = parser.parse_args()
+
         # 设置日志级别
-        if len(sys.argv) > 1 and sys.argv[1] == "--debug":
-            logger.setLevel(logging.DEBUG)
-            print("已启用调试模式，将显示详细日志")
+        setup_logging(debug=args.debug)
+
+        if args.debug:
+            logger.info("启用调试模式，将显示详细日志")
         else:
-            # 默认使用INFO级别，减少日志输出
-            logger.setLevel(logging.INFO)
-            print("使用标准日志级别。使用 --debug 参数可查看详细日志")
+            logger.info("使用标准日志级别。使用 --debug 参数可查看详细日志")
 
-        print("\n开始更新市场数据...")
-        results = analyzer.update_excel()
+        print("==================================================")
+        print("市场数据爬取工具")
+        print("==================================================")
 
-        if results:
-            print("\n程序运行完成")
-        else:
-            print("\n程序运行完成，但未能成功更新数据")
+        analyzer = MarketDataAnalyzer()
 
-    except KeyboardInterrupt:
-        print("\n用户中断，程序退出")
-    except Exception as e:
-        print(f"\n程序运行出错: {str(e)}")
-        logger.error(f"程序运行出错: {str(e)}", exc_info=True)
-    finally:
-        # 确保关闭WebDriver
-        try:
-            analyzer.close_all_drivers()
-        except:
-            pass
+        logger.info("开始更新市场数据...")
+        analyzer.update_excel()
+
+        print("\n程序运行完成")
+
+    main()
