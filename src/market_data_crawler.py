@@ -13,6 +13,7 @@ import platform
 from datetime import datetime
 import os
 import sys
+import threading
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -138,18 +139,28 @@ def retry_on_timeout(func):
 class MarketDataAnalyzer:
     _driver = None
     _driver_lock = False  # 简单锁，防止并发初始化
+    _driver_pool = {}  # 用于存储线程ID到WebDriver实例的映射
+    _driver_pool_lock = threading.RLock()  # 用于保护driver_pool的线程安全锁
 
     def __init__(self):
         print("初始化市场数据分析器...")
-        # 预先初始化WebDriver
-        self._init_driver()
+        # 不再预先初始化WebDriver，而是在需要时按需创建
 
-    def _init_driver(self):
+    def _init_driver(self, thread_id=None):
         """
-        优化的WebDriver初始化方法
+        优化的WebDriver初始化方法，支持为每个线程创建独立的WebDriver实例
+
+        Args:
+            thread_id: 可选的线程ID，用于在driver_pool中标识该WebDriver实例
+
+        Returns:
+            WebDriver实例
         """
-        print("初始化WebDriver...")
-        logger.info("开始初始化WebDriver")
+        if thread_id is None:
+            thread_id = threading.get_ident()
+
+        print(f"为线程 {thread_id} 初始化WebDriver...")
+        logger.info(f"为线程 {thread_id} 开始初始化WebDriver")
 
         import os  # 确保os模块在函数内可用
         system = platform.system()
@@ -173,6 +184,7 @@ class MarketDataAnalyzer:
         options.add_argument(f'user-agent={user_agent}')
         logger.debug(f"使用用户代理: {user_agent}")
 
+        driver = None
         try:
             # 首先尝试使用Chrome
             from webdriver_manager.chrome import ChromeDriverManager
@@ -181,10 +193,10 @@ class MarketDataAnalyzer:
             service = Service(executable_path=driver_path)
 
             # 创建driver并修改navigator.webdriver
-            self.__class__._driver = webdriver.Chrome(service=service, options=options)
+            driver = webdriver.Chrome(service=service, options=options)
 
             # 执行JavaScript修改webdriver标识
-            self.__class__._driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+            driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
                 'source': '''
                     Object.defineProperty(navigator, 'webdriver', {
                         get: () => undefined
@@ -200,9 +212,9 @@ class MarketDataAnalyzer:
                 '''
             })
 
-            logger.info("成功初始化 Chrome WebDriver")
+            logger.info(f"线程 {thread_id} 成功初始化 Chrome WebDriver")
         except Exception as e:
-            logger.warning(f"Chrome WebDriver 初始化失败: {str(e)}")
+            logger.warning(f"线程 {thread_id} Chrome WebDriver 初始化失败: {str(e)}")
 
             try:
                 # 尝试使用Edge
@@ -223,10 +235,10 @@ class MarketDataAnalyzer:
                 else:
                     service = Service(executable_path=driver_path)
 
-                self.__class__._driver = webdriver.Edge(service=service, options=edge_options)
+                driver = webdriver.Edge(service=service, options=edge_options)
 
                 # 执行JavaScript修改webdriver标识
-                self.__class__._driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+                driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
                     'source': '''
                         Object.defineProperty(navigator, 'webdriver', {
                             get: () => undefined
@@ -238,9 +250,9 @@ class MarketDataAnalyzer:
                     '''
                 })
 
-                logger.info("成功初始化 Edge WebDriver")
+                logger.info(f"线程 {thread_id} 成功初始化 Edge WebDriver")
             except Exception as e:
-                logger.warning(f"Edge WebDriver 初始化失败: {str(e)}")
+                logger.warning(f"线程 {thread_id} Edge WebDriver 初始化失败: {str(e)}")
 
                 try:
                     # 最后尝试Firefox
@@ -264,49 +276,84 @@ class MarketDataAnalyzer:
                     driver_path = GeckoDriverManager().install()
 
                     service = Service(executable_path=driver_path)
-                    self.__class__._driver = webdriver.Firefox(service=service, options=firefox_options)
-                    logger.info("成功初始化 Firefox WebDriver")
+                    driver = webdriver.Firefox(service=service, options=firefox_options)
+                    logger.info(f"线程 {thread_id} 成功初始化 Firefox WebDriver")
                 except Exception as e:
-                    logger.error(f"所有WebDriver初始化失败: {str(e)}")
+                    logger.error(f"线程 {thread_id} 所有WebDriver初始化失败: {str(e)}")
                     raise
 
-    @classmethod
-    def get_driver(cls):
-        """
-        获取WebDriver实例，如果不存在则初始化
-        """
-        if cls._driver is None:
-            instance = cls()
+        # 将创建的driver实例添加到pool中
+        with self._driver_pool_lock:
+            self._driver_pool[thread_id] = driver
 
-        # 检查驱动是否仍然有效
-        try:
-            if cls._driver is not None:
-                cls._driver.current_url  # 尝试访问属性以检查驱动是否仍然有效
-        except (WebDriverException, Exception) as e:
-            logger.warning(f"WebDriver已失效，重新初始化: {str(e)}")
-            cls._driver = None
-            instance = cls()
+        return driver
 
-        return cls._driver
+    def get_driver(self):
+        """
+        获取当前线程的WebDriver实例，如果不存在则初始化
 
-    def close_driver(self):
+        Returns:
+            WebDriver实例
         """
-        关闭WebDriver实例
+        thread_id = threading.get_ident()
+
+        with self._driver_pool_lock:
+            driver = self._driver_pool.get(thread_id)
+
+            # 检查驱动是否存在且有效
+            if driver is not None:
+                try:
+                    driver.current_url  # 尝试访问属性以检查驱动是否仍然有效
+                except (WebDriverException, Exception) as e:
+                    logger.warning(f"线程 {thread_id} 的WebDriver已失效，重新初始化: {str(e)}")
+                    driver = None
+
+            # 如果不存在或无效，创建新的
+            if driver is None:
+                driver = self._init_driver(thread_id)
+
+            return driver
+
+    def close_driver(self, thread_id=None):
         """
-        if self.__class__._driver:
-            try:
-                self.__class__._driver.quit()
-            except Exception as e:
-                logger.warning(f"关闭WebDriver时出错: {str(e)}")
-            finally:
-                self.__class__._driver = None
+        关闭指定线程的WebDriver实例
+
+        Args:
+            thread_id: 可选的线程ID，默认为当前线程
+        """
+        if thread_id is None:
+            thread_id = threading.get_ident()
+
+        with self._driver_pool_lock:
+            driver = self._driver_pool.get(thread_id)
+            if driver:
+                try:
+                    driver.quit()
+                    logger.info(f"线程 {thread_id} 的WebDriver已关闭")
+                except Exception as e:
+                    logger.warning(f"关闭线程 {thread_id} 的WebDriver时出错: {str(e)}")
+                finally:
+                    self._driver_pool.pop(thread_id, None)
+
+    def close_all_drivers(self):
+        """
+        关闭所有WebDriver实例
+        """
+        with self._driver_pool_lock:
+            for thread_id, driver in list(self._driver_pool.items()):
+                try:
+                    driver.quit()
+                    logger.info(f"线程 {thread_id} 的WebDriver已关闭")
+                except Exception as e:
+                    logger.warning(f"关闭线程 {thread_id} 的WebDriver时出错: {str(e)}")
+            self._driver_pool.clear()
 
     def get_random_user_agent(self):
         user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.81 Safari/537.36",
@@ -452,13 +499,9 @@ class MarketDataAnalyzer:
     def crawl_exchange_rate(self, url):
         """优化后的汇率数据爬取方法（带详细调试日志）"""
         driver = self.get_driver()
-        logger.info(f"🌐 开始爬取汇率数据：{url}")
+        logger.info(f"开始爬取汇率数据：{url}")
 
         try:
-            # # 添加随机延迟，防止请求过于规律
-            # wait_time = random.uniform(2, 5)
-            # logger.debug(f"等待 {wait_time:.2f} 秒后发起请求...")
-            # time.sleep(wait_time)
 
             # 设置超时策略
             driver.set_page_load_timeout(20)
@@ -466,33 +509,19 @@ class MarketDataAnalyzer:
             wait = WebDriverWait(driver, 25, poll_frequency=1)
 
             try:
-                logger.debug("🚦 尝试加载页面...")
+                logger.debug("尝试加载页面...")
                 driver.get(url)
             except TimeoutException:
-                logger.warning("⏰ 页面加载超时，强制停止")
+                logger.warning("页面加载超时，强制停止")
                 driver.execute_script("window.stop();")
-
-            # 检查并处理Cloudflare防护
-            if not self.handle_cloudflare(driver):
-                logger.error("无法通过Cloudflare验证")
-                return None
-
-            # 模拟人类行为
-            self.simulate_human_behavior(driver)
-
-            # 调试：保存页面快照
-            if logger.isEnabledFor(logging.DEBUG):
-                with open("page_source.html", "w", encoding="utf-8") as f:
-                    f.write(driver.page_source)
-                driver.save_screenshot("debug_snapshot.png")
 
             # 表格定位策略优化
             try:
-                logger.debug("🔍 定位数据表格...")
+                logger.debug("定位数据表格...")
                 table = wait.until(EC.presence_of_element_located((
                     By.XPATH, '//table[contains(@class, "freeze-column")]'
                 )))
-                logger.debug("✅ 表格定位成功")
+                logger.debug("表格定位成功")
             except TimeoutException as e:
                 logger.error("❌ 表格定位失败，可能原因：")
                 logger.error("1. 页面结构已变更")
@@ -519,14 +548,14 @@ class MarketDataAnalyzer:
                 return rows if len(rows) > 5 else None  # 至少需要5行数据
 
             try:
-                logger.debug("🔄 尝试获取数据行...")
+                logger.debug("尝试获取数据行...")
                 rows = wait.until(
                     lambda d: _load_rows(d) or (_load_rows(d) and False),
                     message="数据行加载失败"
                 )
-                logger.info(f"📊 获取到 {len(rows)} 行有效数据")
+                logger.info(f"获取到 {len(rows)} 行有效数据")
             except TimeoutException:
-                logger.error("⏰ 数据行加载超时，可能原因：")
+                logger.error("数据行加载超时，可能原因：")
                 logger.error("1. 滚动加载未触发")
                 logger.error("2. 反爬验证未通过")
                 return None
@@ -534,16 +563,14 @@ class MarketDataAnalyzer:
             # 数据解析优化
             results = []
             required_columns = {"收盘", "开盘", "高", "低"}
-            for idx, row in enumerate(rows[:100]):  # 限制处理前100行
+            for idx, row in enumerate(rows[:10]):  # 限制处理前100行
                 try:
-                    # 可视化检查
-                    if not row.is_displayed():
-                        driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth'});", row)
-                        time.sleep(0.3)
+
 
                     # 动态定位元素
                     date_cell = row.find_element(By.CSS_SELECTOR, "td:first-child time")
                     cells = row.find_elements(By.CSS_SELECTOR, "td:not([style*='display:none'])")
+
 
                     # 数据校验
                     if len(cells) < 5:
@@ -559,11 +586,11 @@ class MarketDataAnalyzer:
                         "低": cells[4].text.strip()
                     }
 
-                    # 动态处理涨跌幅
-                    if len(cells) >= 7:
+                    if url == 'https://cn.investing.com/rates-bonds/u.s.-10-year-bond-yield-historical-data':
+                        record["涨跌幅"] = cells[5].text.strip()
+                    else:
                         record["涨跌幅"] = cells[6].text.strip()
-                    elif "涨跌幅" in required_columns:
-                        logger.warning(f"第 {idx} 行缺少涨跌幅数据")
+
 
                     results.append(record)
 
@@ -578,16 +605,16 @@ class MarketDataAnalyzer:
                     logger.debug(f"第 {idx} 行解析异常：{str(e)}")
                     continue
 
-            logger.info(f"✅ 成功解析 {results} 条有效记录")
+            logger.info(f"成功解析 {len(results)} 条有效记录")
             return results
 
         except Exception as e:
-            logger.error(f"❌ 爬取过程异常：{str(e)}")
+            logger.error(f"爬取过程异常：{str(e)}")
             logger.debug(f"异常堆栈：", exc_info=True)
             return None
         finally:
             driver.quit()
-            logger.debug("🛑 浏览器实例已关闭")
+            logger.debug("浏览器实例已关闭")
 
 
     def find_last_row(self, sheet):
@@ -817,28 +844,52 @@ class MarketDataAnalyzer:
         """
         更新现有Excel文件，追加数据到对应sheet的最后一行（优化版）
         """
-        MAX_RETRIES = 2  # 最大重试次数
         stats = CrawlStats()  # 创建统计对象
 
         try:
             results = {}
+            all_futures = []
+            future_to_sheet = {}
 
-            # 1. 并行处理汇率数据（不需要WebDriver）
-            logger.info("开始并行爬取汇率数据...")
-            with concurrent.futures.ThreadPoolExecutor(max_workers=7) as executor:
-                future_to_sheet = {}
-
+            # 创建线程池，用于所有数据的并行处理
+            logger.info("开始并行爬取所有数据...")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+                # 1. 并行处理汇率数据（不需要WebDriver）
+                logger.info("提交汇率数据爬取任务...")
                 for pair, url in config.CURRENCY_PAIRS.items():
                     logger.info(f"正在分析 {pair} 的数据...")
                     future = executor.submit(self.crawl_exchange_rate, url)
                     future_to_sheet[future] = pair
+                    all_futures.append(future)
 
-                for future in concurrent.futures.as_completed(future_to_sheet):
+                # 2. 并行处理日频数据（需要WebDriver）
+                logger.info("提交日频数据爬取任务...")
+                for sheet_name, info in config.DAILY_DATA_PAIRS.items():
+                    logger.info(f"正在分析日频数据 {sheet_name}...")
+                    future = executor.submit(self._crawl_with_webdriver, sheet_name, info)
+                    future_to_sheet[future] = sheet_name
+                    all_futures.append(future)
+
+                # 3. 并行处理月度数据（需要WebDriver）
+                logger.info("提交月度数据爬取任务...")
+                for sheet_name, info in config.MONTHLY_DATA_PAIRS.items():
+                    logger.info(f"正在分析月度数据 {sheet_name}...")
+                    future = executor.submit(self._crawl_with_webdriver, sheet_name, info, is_monthly=True)
+                    future_to_sheet[future] = sheet_name
+                    all_futures.append(future)
+
+                # 等待所有任务完成并收集结果
+                logger.info(f"等待所有 {len(all_futures)} 个爬取任务完成...")
+                for future in concurrent.futures.as_completed(all_futures):
                     sheet_name = future_to_sheet[future]
                     try:
                         data = future.result()
                         if data:
-                            results[sheet_name] = data
+                            # 对于月度数据，只保留第一行
+                            if sheet_name in config.MONTHLY_DATA_PAIRS and isinstance(data, list) and len(data) > 0:
+                                results[sheet_name] = data[0]
+                            else:
+                                results[sheet_name] = data
                             stats.add_success(sheet_name)
                             logger.info(f"✓ 成功获取 {sheet_name} 数据")
                         else:
@@ -848,57 +899,12 @@ class MarketDataAnalyzer:
                         stats.add_failure(sheet_name, str(e))
                         logger.error(f"{sheet_name}: 处理数据时出错: {str(e)}")
 
-            # 2. 顺序处理日频数据（需要WebDriver）
-            logger.info("\n开始爬取日频数据...")
-            for sheet_name, info in config.DAILY_DATA_PAIRS.items():
-                logger.info(f"正在分析日频数据 {sheet_name}...")
-                try:
-                    # 确保WebDriver已初始化
-                    self._init_driver()
-
-                    # 调用对应的爬虫方法
-                    crawler_method = getattr(self, info['crawler'])
-                    data = crawler_method(info['url'])
-
-                    if data:
-                        results[sheet_name] = data
-                        stats.add_success(sheet_name)
-                        logger.info(f"✓ 成功获取 {sheet_name} 数据")
-                    else:
-                        stats.add_failure(sheet_name, "爬取返回空数据")
-                        logger.warning(f"{sheet_name}: 爬取返回空数据")
-                except Exception as e:
-                    stats.add_failure(sheet_name, str(e))
-                    logger.error(f"{sheet_name}: 处理数据时出错: {str(e)}")
-
-            # 3. 顺序处理月度数据（需要WebDriver）
-            logger.info("\n开始爬取月度数据...")
-            for sheet_name, info in config.MONTHLY_DATA_PAIRS.items():
-                logger.info(f"正在分析月度数据 {sheet_name}...")
-                try:
-                    # 确保WebDriver已初始化
-                    self._init_driver()
-
-                    # 调用对应的爬虫方法
-                    crawler_method = getattr(self, info['crawler'])
-                    data = crawler_method(info['url'])
-
-                    if data:
-                        # 对于月度数据，只保留第一行
-                        if isinstance(data, list) and len(data) > 0:
-                            results[sheet_name] = data[0]
-                        else:
-                            results[sheet_name] = data
-                        stats.add_success(sheet_name)
-                        logger.info(f"✓ 成功获取 {sheet_name} 数据")
-                    else:
-                        stats.add_failure(sheet_name, "爬取返回空数据")
-                        logger.warning(f"{sheet_name}: 爬取返回空数据")
-                except Exception as e:
-                    stats.add_failure(sheet_name, str(e))
-                    logger.error(f"{sheet_name}: 处理数据时出错: {str(e)}")
+            # 关闭所有WebDriver实例
+            logger.info("所有爬取任务已完成，关闭WebDriver实例...")
+            self.close_all_drivers()
 
             # 4. 更新Excel文件
+            logger.info("开始更新Excel文件...")
             try:
                 excel_path = config.EXCEL_OUTPUT_PATH
                 logger.info(f"尝试打开Excel文件: {excel_path}")
@@ -1006,17 +1012,41 @@ class MarketDataAnalyzer:
                 else:
                     logger.info("所有工作表数据均已是最新，Excel文件未做修改")
 
-
-
                 return results
             except FileNotFoundError as e:
                 logger.error(str(e))
                 raise  # 重新抛出错误，不尝试创建新文件
             except Exception as e:
                 logger.error(f"更新Excel过程中出错: {str(e)}", exc_info=True)
-                raise  # 重新抛出错误
+                return False
         finally:
-            self.close_driver()
+            # 确保关闭所有WebDriver实例
+            self.close_all_drivers()
+
+    def _crawl_with_webdriver(self, sheet_name, info, is_monthly=False):
+        """
+        使用WebDriver爬取数据的辅助方法，每个线程使用独立的WebDriver实例
+
+        Args:
+            sheet_name: 工作表名称
+            info: 包含爬虫方法和URL的信息字典
+            is_monthly: 是否为月度数据
+
+        Returns:
+            爬取的数据
+        """
+        try:
+            # 获取当前线程的WebDriver
+            driver = self.get_driver()
+
+            # 调用对应的爬虫方法
+            crawler_method = getattr(self, info['crawler'])
+            data = crawler_method(info['url'])
+
+            return data
+        except Exception as e:
+            logger.error(f"爬取 {sheet_name} 数据时出错: {str(e)}")
+            raise
 
     @log_execution_time
     @retry_on_timeout
@@ -1024,8 +1054,8 @@ class MarketDataAnalyzer:
         """
         爬取钢铁价格数据（优化版）
         """
-        logger.debug(f"正在请求URL: {url}")
         driver = self.get_driver()
+        logger.debug(f"正在请求URL: {url}")
 
         try:
             # 针对特定站点增加超时时间
@@ -1089,6 +1119,9 @@ class MarketDataAnalyzer:
                     table = driver.find_element(By.XPATH, '//table[contains(@class,"detailTab")]')
                     rows = table.find_elements(By.XPATH, './/tbody/tr[position()<=10]')
                     continue
+                except Exception as e:
+                    logger.debug(f"Steel price: 第 {idx} 行解析异常：{str(e)}")
+                    continue
 
             logger.debug(f"成功抓取 Steel price 数据: {len(data)} 条记录")
             return data
@@ -1101,6 +1134,7 @@ class MarketDataAnalyzer:
             return None
 
     @log_execution_time
+    @retry_on_timeout
     def crawl_shibor_rate(self, url):
         """
         爬取Shibor利率数据（优化版）
@@ -1151,6 +1185,7 @@ class MarketDataAnalyzer:
             return None
 
     @log_execution_time
+    @retry_on_timeout
     def crawl_lpr(self, url):
         """
         爬取LPR数据（优化版）
@@ -1209,6 +1244,7 @@ class MarketDataAnalyzer:
             return None
 
     @log_execution_time
+    @retry_on_timeout
     def crawl_sofr(self, url):
         """
         爬取SOFR数据（优化版）
@@ -1262,6 +1298,7 @@ class MarketDataAnalyzer:
             return None
 
     @log_execution_time
+    @retry_on_timeout
     def crawl_ester(self, url):
         """
         爬取ESTER数据（优化版）
@@ -1318,6 +1355,7 @@ class MarketDataAnalyzer:
             return None
 
     @log_execution_time
+    @retry_on_timeout
     def crawl_jpy_rate(self, url):
         """
         爬取JPY利率数据（优化版）
@@ -1774,6 +1812,6 @@ if __name__ == "__main__":
     finally:
         # 确保关闭WebDriver
         try:
-            analyzer.close_driver()
+            analyzer.close_all_drivers()
         except:
             pass
