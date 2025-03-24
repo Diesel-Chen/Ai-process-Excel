@@ -216,8 +216,12 @@ class CrawlStats:
         logger.info("=" * 50)
 
 class MarketDataAnalyzer:
-    _driver = None
+    _driver = None  # 普通WebDriver实例（启用JavaScript）
     _driver_lock = threading.RLock()  # 简单锁，防止并发初始化
+    
+    _exchange_rate_driver = None  # 专用于汇率数据的WebDriver实例（禁用JavaScript）
+    _exchange_rate_driver_lock = threading.RLock()  # 汇率数据WebDriver的锁
+    
     _instance = None  # 添加单例实例变量
 
     def __init__(self):
@@ -233,13 +237,19 @@ class MarketDataAnalyzer:
     def _signal_handler(self, sig, frame):
         """处理程序终止信号，确保关闭WebDriver"""
         logger.info(f"接收到终止信号 {sig}，正在关闭WebDriver...")
-        self.close_driver()
-        logger.info("WebDriver已安全关闭，程序退出")
+        # 关闭普通WebDriver
+        self.close_driver(for_exchange_rate=False)
+        # 关闭汇率数据专用WebDriver
+        self.close_driver(for_exchange_rate=True)
+        logger.info("所有WebDriver实例已安全关闭，程序退出")
         sys.exit(0)
 
-    def _init_driver(self):
+    def _init_driver(self, disable_javascript=False):
         """
         优化的WebDriver初始化方法
+        
+        Args:
+            disable_javascript: 是否禁用JavaScript，默认为False
         """
         print("初始化WebDriver...")
         logger.info("开始初始化WebDriver")
@@ -261,6 +271,11 @@ class MarketDataAnalyzer:
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
         options.page_load_strategy = 'eager'  # 当DOM就绪时就开始操作，不等待图片等资源
+        
+        # 根据参数决定是否禁用JavaScript
+        if disable_javascript:
+            logger.info("禁用JavaScript模式已启用（用于汇率数据爬取）")
+            options.add_experimental_option("prefs", {"profile.managed_default_content_settings.javascript": 2})
 
         # 添加随机用户代理
         user_agent = self.get_random_user_agent()
@@ -280,23 +295,6 @@ class MarketDataAnalyzer:
 
             # 创建driver并修改navigator.webdriver
             driver = webdriver.Chrome(service=service, options=options)
-
-            # 执行JavaScript修改webdriver标识
-            driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
-                'source': '''
-                    Object.defineProperty(navigator, 'webdriver', {
-                        get: () => undefined
-                    });
-                    // 修改语言标识以增加随机性
-                    Object.defineProperty(navigator, 'languages', {
-                        get: () => ['zh-CN', 'zh', 'en-US', 'en']
-                    });
-                    // 修改硬件并发线程
-                    Object.defineProperty(navigator, 'hardwareConcurrency', {
-                        get: () => 8
-                    });
-                '''
-            })
 
             logger.info("成功初始化 Chrome WebDriver")
         except Exception as e:
@@ -370,32 +368,58 @@ class MarketDataAnalyzer:
 
         return driver
 
-    def get_driver(self):
+    def get_driver(self, for_exchange_rate=False):
         """
         获取WebDriver实例，如果不存在则初始化
+        
+        Args:
+            for_exchange_rate: 是否用于汇率数据爬取（禁用JavaScript）
 
         Returns:
             WebDriver实例
         """
-        with self._driver_lock:
-            if self._driver is None:
-                self._driver = self._init_driver()
+        if for_exchange_rate:
+            # 获取专用于汇率数据的WebDriver实例（禁用JavaScript）
+            with self._exchange_rate_driver_lock:
+                if self._exchange_rate_driver is None:
+                    self._exchange_rate_driver = self._init_driver(disable_javascript=True)
+                return self._exchange_rate_driver
+        else:
+            # 获取普通WebDriver实例（启用JavaScript）
+            with self._driver_lock:
+                if self._driver is None:
+                    self._driver = self._init_driver(disable_javascript=False)
+                return self._driver
 
-            return self._driver
-
-    def close_driver(self):
+    def close_driver(self, for_exchange_rate=False):
         """
         关闭WebDriver实例
+        
+        Args:
+            for_exchange_rate: 是否关闭汇率数据专用的WebDriver实例
         """
-        with self._driver_lock:
-            if self._driver:
-                try:
-                    self._driver.quit()
-                    logger.info("WebDriver已关闭")
-                except Exception as e:
-                    logger.warning(f"关闭WebDriver时出错: {str(e)}")
-                finally:
-                    self._driver = None
+        if for_exchange_rate:
+            # 关闭汇率数据专用的WebDriver实例
+            with self._exchange_rate_driver_lock:
+                if self._exchange_rate_driver:
+                    try:
+                        self._exchange_rate_driver.quit()
+                        logger.info("汇率数据WebDriver已关闭")
+                    except Exception as e:
+                        logger.warning(f"关闭汇率数据WebDriver时出错: {str(e)}")
+                    finally:
+                        self._exchange_rate_driver = None
+        else:
+            # 关闭普通WebDriver实例
+            with self._driver_lock:
+                if self._driver:
+                    try:
+                        self._driver.quit()
+                        logger.info("普通WebDriver已关闭")
+                    except Exception as e:
+                        logger.warning(f"关闭普通WebDriver时出错: {str(e)}")
+                    finally:
+                        self._driver = None
 
     def get_random_user_agent(self):
         user_agents = [
@@ -412,50 +436,6 @@ class MarketDataAnalyzer:
         ]
         return random.choice(user_agents)
 
-    def simulate_human_behavior(self, driver):
-        """模拟人类浏览行为，减少被检测为机器人的可能性"""
-        try:
-            # 随机等待
-            time.sleep(random.uniform(1, 3))
-
-            # 随机滚动
-            for _ in range(random.randint(2, 5)):
-                scroll_amount = random.randint(300, 700)
-                driver.execute_script(f"window.scrollBy(0, {scroll_amount});")
-                time.sleep(random.uniform(0.5, 1.5))
-
-            # 随机移动鼠标(使用ActionChains)
-            if random.random() > 0.5:  # 50%概率执行
-                action = ActionChains(driver)
-                for _ in range(random.randint(1, 3)):
-                    action.move_by_offset(random.randint(-100, 100), random.randint(-100, 100))
-                    action.perform()
-                    time.sleep(random.uniform(0.1, 0.5))
-
-            logger.debug("已执行人类行为模拟")
-        except Exception as e:
-            logger.warning(f"模拟人类行为时出错: {str(e)}")
-
-    def handle_cloudflare(self, driver, timeout=30):
-        """处理Cloudflare防护页面"""
-        try:
-            start_time = time.time()
-            while time.time() - start_time < timeout:
-                if "Just a moment..." in driver.title or "Checking your browser" in driver.page_source:
-                    logger.info("检测到Cloudflare验证，等待通过...")
-                    # 等待一段时间并模拟几次滚动
-                    self.simulate_human_behavior(driver)
-                    time.sleep(random.uniform(2, 3))
-                else:
-                    logger.info("Cloudflare验证已通过或不存在")
-                    return True  # 验证通过或不存在验证
-            logger.warning("Cloudflare验证超时")
-            return False  # 超时，验证失败
-        except Exception as e:
-            logger.error(f"处理Cloudflare验证时出错: {str(e)}")
-            return False
-
-        return True  # 没有Cloudflare验证页面，直接返回成功
 
     def format_exchange_rate_date(self,raw_date):
         # 解析中文月份
@@ -549,7 +529,8 @@ class MarketDataAnalyzer:
     @retry_on_timeout
     def crawl_exchange_rate(self, url):
         """优化后的汇率数据爬取方法（带详细调试日志）"""
-        driver = self.get_driver()
+        # 获取专用于汇率数据的WebDriver实例（禁用JavaScript）
+        driver = self.get_driver(for_exchange_rate=True)
         logger.info(f"开始爬取汇率数据：{url}")
 
         try:
@@ -602,7 +583,6 @@ class MarketDataAnalyzer:
                     lambda d: _load_rows(d) or (_load_rows(d) and False),
                     message="数据行加载失败"
                 )
-                logger.info(f"获取到 {len(rows)} 行有效数据")
             except TimeoutException:
                 logger.error("数据行加载超时，可能原因：")
                 logger.error("1. 滚动加载未触发")
@@ -661,9 +641,7 @@ class MarketDataAnalyzer:
             logger.error(f"爬取过程异常：{str(e)}")
             logger.debug(f"异常堆栈：", exc_info=True)
             return None
-        finally:
-            self.close_driver()
-            logger.debug("WebDriver已关闭")
+
 
     def find_last_row(self, sheet):
         """
@@ -911,9 +889,9 @@ class MarketDataAnalyzer:
             logger.info(f"🔄 总任务数: {total_tasks} 项")
             logger.info("=" * 50)
 
-            # 初始化一次WebDriver实例
+            # 初始化两个WebDriver实例
             logger.info("⚙️ 初始化WebDriver实例...")
-            driver = self._init_driver()
+            # 普通WebDriver实例已经通过get_driver()方法按需初始化
 
             # 更新进度的辅助函数
             def update_progress(sheet_name, data_type, success=True, error_msg=None):
@@ -989,7 +967,8 @@ class MarketDataAnalyzer:
 
             # 关闭WebDriver实例
             logger.info("爬取任务完成，关闭WebDriver实例...")
-            self.close_driver()
+            self.close_driver(for_exchange_rate=False)  # 关闭普通WebDriver
+            self.close_driver(for_exchange_rate=True)   # 关闭汇率数据WebDriver
 
             logger.info("=" * 50)
             logger.info("🏁 数据爬取完成，准备更新Excel文件...")
