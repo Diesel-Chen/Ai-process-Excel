@@ -14,6 +14,7 @@ from datetime import datetime
 import os
 import sys
 import threading
+import signal
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -217,10 +218,24 @@ class CrawlStats:
 class MarketDataAnalyzer:
     _driver = None
     _driver_lock = threading.RLock()  # 简单锁，防止并发初始化
+    _instance = None  # 添加单例实例变量
 
     def __init__(self):
         print("初始化市场数据分析器...")
         # 不再预先初始化WebDriver，而是在需要时按需创建
+        # 设置信号处理器，确保在程序被终止时关闭WebDriver
+        signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGTERM, self._signal_handler)
+
+        # 单例模式，保存实例引用
+        MarketDataAnalyzer._instance = self
+
+    def _signal_handler(self, sig, frame):
+        """处理程序终止信号，确保关闭WebDriver"""
+        logger.info(f"接收到终止信号 {sig}，正在关闭WebDriver...")
+        self.close_driver()
+        logger.info("WebDriver已安全关闭，程序退出")
+        sys.exit(0)
 
     def _init_driver(self):
         """
@@ -257,7 +272,8 @@ class MarketDataAnalyzer:
             # 首先尝试使用Chrome
             from webdriver_manager.chrome import ChromeDriverManager
 
-            driver_path = ChromeDriverManager().install()
+            # driver_path = ChromeDriverManager().install()
+            driver_path ='/Users/dieselchen/.wdm/drivers/chromedriver/mac64/134.0.6998.165/chromedriver-mac-x64/chromedriver'
             # driver_path='/root/.wdm/drivers/chromedriver/linux64/134.0.6998.165/chromedriver-linux64/chromedriver'
 
             service = Service(executable_path=driver_path)
@@ -540,7 +556,7 @@ class MarketDataAnalyzer:
 
             # 设置超时策略
             driver.set_page_load_timeout(30)
-            wait = WebDriverWait(driver, 25, poll_frequency=2)
+            wait = WebDriverWait(driver, 25, poll_frequency=0.5)
 
             try:
                 logger.debug("尝试加载页面...")
@@ -569,7 +585,6 @@ class MarketDataAnalyzer:
                 last_height = driver.execute_script("return document.body.scrollHeight")
                 for _ in range(3):  # 最多滚动3次
                     driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                    time.sleep(1.5)
                     new_height = driver.execute_script("return document.body.scrollHeight")
                     if new_height == last_height:
                         break
@@ -646,6 +661,9 @@ class MarketDataAnalyzer:
             logger.error(f"爬取过程异常：{str(e)}")
             logger.debug(f"异常堆栈：", exc_info=True)
             return None
+        finally:
+            self.close_driver()
+            logger.debug("WebDriver已关闭")
 
     def find_last_row(self, sheet):
         """
@@ -1843,8 +1861,17 @@ if __name__ == "__main__":
 
         analyzer = MarketDataAnalyzer()
 
-        logger.info("开始更新市场数据...")
-        analyzer.update_excel()
+        try:
+            logger.info("开始更新市场数据...")
+            analyzer.update_excel()
+        except KeyboardInterrupt:
+            logger.info("检测到用户中断，正在关闭资源...")
+        except Exception as e:
+            logger.error(f"程序执行出错: {str(e)}")
+        finally:
+            # 确保在程序结束时关闭WebDriver
+            analyzer.close_driver()
+            logger.info("程序资源已清理")
 
         print("\n程序运行完成")
 
