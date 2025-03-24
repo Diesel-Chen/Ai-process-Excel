@@ -14,7 +14,7 @@ from datetime import datetime
 import os
 import sys
 import threading
-import signal
+# 移除signal模块导入，因为它只能在主线程中使用
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -189,31 +189,40 @@ class CrawlStats:
         self.skipped[name] = reason
 
     def print_summary(self):
-        """打印统计摘要"""
-        logger.info("📊 爬取统计摘要")
-        logger.info("=" * 50)
+        """打印统计摘要并返回摘要文本"""
+        # 构建摘要文本
+        summary_lines = []
+        summary_lines.append("📊 爬取统计摘要")
+        summary_lines.append("=" * 50)
 
         # 成功数据
         if self.success:
-            logger.info(f"✅ 成功: {len(self.success)} 项")
+            summary_lines.append(f"✅ 成功: {len(self.success)} 项")
             # 每行最多显示4个项目
             for i in range(0, len(self.success), 4):
                 chunk = self.success[i:i+4]
-                logger.info(f"   {', '.join(chunk)}")
+                summary_lines.append(f"   {', '.join(chunk)}")
 
         # 失败数据
         if self.failure:
-            logger.info(f"\n❌ 失败: {len(self.failure)} 项")
+            summary_lines.append(f"\n❌ 失败: {len(self.failure)} 项")
             for name, reason in self.failure.items():
-                logger.error(f"   {name}: {reason}")
+                summary_lines.append(f"   {name}: {reason}")
 
         # 跳过数据
         if self.skipped:
-            logger.info(f"\n⏭️ 跳过: {len(self.skipped)} 项")
+            summary_lines.append(f"\n⏭️ 跳过: {len(self.skipped)} 项")
             for name, reason in self.skipped.items():
-                logger.warning(f"   {name}: {reason}")
+                summary_lines.append(f"   {name}: {reason}")
 
-        logger.info("=" * 50)
+        summary_lines.append("=" * 50)
+
+        # 将摘要文本记录到日志
+        for line in summary_lines:
+            logger.info(line)
+
+        # 返回完整的摘要文本
+        return "\n".join(summary_lines)
 
 class MarketDataAnalyzer:
     _driver = None  # 普通WebDriver实例（启用JavaScript）
@@ -227,22 +236,13 @@ class MarketDataAnalyzer:
     def __init__(self):
         print("初始化市场数据分析器...")
         # 不再预先初始化WebDriver，而是在需要时按需创建
-        # 设置信号处理器，确保在程序被终止时关闭WebDriver
-        signal.signal(signal.SIGINT, self._signal_handler)
-        signal.signal(signal.SIGTERM, self._signal_handler)
+        # 在多线程环境中不使用信号处理
+        # 因为信号处理只能在主线程中使用
 
         # 单例模式，保存实例引用
         MarketDataAnalyzer._instance = self
 
-    def _signal_handler(self, sig, frame):
-        """处理程序终止信号，确保关闭WebDriver"""
-        logger.info(f"接收到终止信号 {sig}，正在关闭WebDriver...")
-        # 关闭普通WebDriver
-        self.close_driver(for_exchange_rate=False)
-        # 关闭汇率数据专用WebDriver
-        self.close_driver(for_exchange_rate=True)
-        logger.info("所有WebDriver实例已安全关闭，程序退出")
-        sys.exit(0)
+    # 移除信号处理方法，因为它只能在主线程中使用
 
     def _init_driver(self, disable_javascript=False):
         """
@@ -1086,9 +1086,14 @@ class MarketDataAnalyzer:
                         updated_sheets.append(sheet_name)
                         logger.info(f"📝 更新 {sheet_name}")
 
-            # 打印统计摘要
+            # 打印统计摘要并获取摘要文本
             logger.info("=" * 50)
-            stats.print_summary()
+            summary_text = stats.print_summary()
+
+            # 添加一个特殊的日志消息，标记为摘要信息
+            # logger.info("SUMMARY_START")
+            # logger.info(summary_text)
+            # logger.info("SUMMARY_END")
 
             # 保存Excel文件
             if excel_updates:

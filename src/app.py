@@ -10,8 +10,14 @@ import time
 from datetime import datetime
 
 # 导入爬虫模块
-import market_data_crawler
-import config
+try:
+    # 当从src目录直接运行时
+    import market_data_crawler
+    import config
+except ImportError:
+    # 当从项目根目录运行时
+    from src import market_data_crawler
+    from src import config
 
 app = Flask(__name__, static_folder='../static', static_url_path='')
 
@@ -215,11 +221,19 @@ def get_logs():
                     yield f"data: {json_str}\n\n"
 
                 # 发送结束消息
-                end_message = [{
-                    "level": "INFO",
-                    "message": "=== 数据更新完成 ===",
-                    "timestamp": datetime.now().strftime('%H:%M:%S')
-                }]
+                end_message = [
+                    {
+                        "level": "INFO",
+                        "message": "=== 数据更新完成 ===",
+                        "timestamp": datetime.now().strftime('%H:%M:%S')
+                    },
+                    # 添加一个消息来触发前端显示摘要信息
+                    {
+                        "level": "INFO",
+                        "message": "SHOW_SUMMARY",
+                        "timestamp": datetime.now().strftime('%H:%M:%S')
+                    }
+                ]
                 json_str = str(end_message).replace("'", '"')
                 yield f"data: {json_str}\n\n"
                 break

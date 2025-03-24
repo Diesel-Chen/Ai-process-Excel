@@ -100,9 +100,15 @@ function connectLogStream() {
   console.log("开始连接日志流...");
   eventSource = new EventSource(`${apiBaseUrl}/logs`);
 
+  // 用于收集摘要信息的变量
+  let collectingSummary = false;
+  let summaryText = "";
+  
   eventSource.onmessage = function (event) {
     console.log("收到日志数据:", event.data);
     const logContainer = document.getElementById("logContainer");
+    const logSummary = document.getElementById("logSummary");
+    const logSummaryContent = document.getElementById("logSummaryContent");
 
     if (!logContainer) {
       console.error("找不到日志容器元素");
@@ -122,6 +128,47 @@ function connectLogStream() {
         // 检查日志对象的完整性
         if (!log || !log.level || !log.message || !log.timestamp) {
           console.error("无效的日志条目:", log);
+          return;
+        }
+        
+        // 检查是否是摘要信息的开始或结束标记
+        console.log(`检查日志消息: "${log.message}"`); // 打印每条日志消息以进行调试
+        
+        if (log.message.trim() === "SUMMARY_START") {
+          console.log("检测到摘要开始标记");
+          collectingSummary = true;
+          summaryText = "";
+          return;
+        } else if (log.message.trim() === "SUMMARY_END") {
+          console.log("检测到摘要结束标记");
+          collectingSummary = false;
+          console.log("摘要文本已收集完成:", summaryText);
+          return;
+        } else if (log.message.trim() === "SHOW_SUMMARY") {
+          console.log("检测到显示摘要消息");
+          // 显示摘要信息
+          console.log("摘要文本:", summaryText);
+          console.log("摘要元素:", logSummaryContent ? "存在" : "不存在", logSummary ? "存在" : "不存在");
+          
+          if (summaryText && logSummaryContent && logSummary) {
+            logSummaryContent.textContent = summaryText;
+            logSummary.style.display = "block";
+            logContainer.scrollTop = logContainer.scrollHeight;
+            console.log("摘要显示已设置");
+          } else {
+            console.error("无法显示摘要: ", {
+              summaryText: Boolean(summaryText),
+              logSummaryContent: Boolean(logSummaryContent),
+              logSummary: Boolean(logSummary)
+            });
+          }
+          return;
+        }
+        
+        // 如果正在收集摘要信息，则将日志消息添加到摘要文本中
+        if (collectingSummary) {
+          console.log(`添加摘要行: "${log.message}"`); 
+          summaryText += log.message + "\n";
           return;
         }
 

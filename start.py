@@ -110,13 +110,13 @@ def main():
     try:
         if args.mode == 'dev':
             # 开发模式：使用Flask内置服务器
-            from app import app
+            from src.app import app
             app.run(host=args.host, port=args.port, debug=True)
         else:
             # 生产模式：使用产品级WSGI服务器（如果安装）
             try:
                 from waitress import serve
-                from app import create_app
+                from src.app import create_app
 
                 app = create_app()
                 print(f"使用Waitress服务器在{args.host}:{args.port}上运行")
@@ -125,7 +125,7 @@ def main():
                 # 如果没有安装Waitress，回退到Flask开发服务器
                 print("警告: Waitress未安装，回退到Flask开发服务器")
                 print("建议安装Waitress：pip install waitress")
-                from app import app
+                from src.app import app
                 app.run(host=args.host, port=args.port, debug=False)
 
     except ImportError as e:
