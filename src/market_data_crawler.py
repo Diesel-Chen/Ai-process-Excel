@@ -218,10 +218,10 @@ class CrawlStats:
 class MarketDataAnalyzer:
     _driver = None  # 普通WebDriver实例（启用JavaScript）
     _driver_lock = threading.RLock()  # 简单锁，防止并发初始化
-    
+
     _exchange_rate_driver = None  # 专用于汇率数据的WebDriver实例（禁用JavaScript）
     _exchange_rate_driver_lock = threading.RLock()  # 汇率数据WebDriver的锁
-    
+
     _instance = None  # 添加单例实例变量
 
     def __init__(self):
@@ -247,12 +247,15 @@ class MarketDataAnalyzer:
     def _init_driver(self, disable_javascript=False):
         """
         优化的WebDriver初始化方法
-        
+
         Args:
             disable_javascript: 是否禁用JavaScript，默认为False
         """
-        print("初始化WebDriver...")
-        logger.info("开始初始化WebDriver")
+        if disable_javascript:
+            logger.info("开始初始化WebDriverWithDisableJavascript")
+        else:
+            logger.info("开始初始化WebDriver")
+
 
         import os  # 确保os模块在函数内可用
         system = platform.system()
@@ -271,7 +274,7 @@ class MarketDataAnalyzer:
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
         options.page_load_strategy = 'eager'  # 当DOM就绪时就开始操作，不等待图片等资源
-        
+
         # 根据参数决定是否禁用JavaScript
         if disable_javascript:
             logger.info("禁用JavaScript模式已启用（用于汇率数据爬取）")
@@ -371,7 +374,7 @@ class MarketDataAnalyzer:
     def get_driver(self, for_exchange_rate=False):
         """
         获取WebDriver实例，如果不存在则初始化
-        
+
         Args:
             for_exchange_rate: 是否用于汇率数据爬取（禁用JavaScript）
 
@@ -394,7 +397,7 @@ class MarketDataAnalyzer:
     def close_driver(self, for_exchange_rate=False):
         """
         关闭WebDriver实例
-        
+
         Args:
             for_exchange_rate: 是否关闭汇率数据专用的WebDriver实例
         """
@@ -868,7 +871,8 @@ class MarketDataAnalyzer:
 
     def update_excel(self):
         """
-        更新现有Excel文件，追加数据到对应sheet的最后一行（串行执行版本）
+        更新现有Excel文件，追加数据到对应sheet的最后一行（并发执行版本）
+        汇率数据爬取和日频/月度数据爬取并发执行，使用不同的WebDriver实例
         """
         stats = CrawlStats()  # 创建统计对象
 
@@ -881,7 +885,7 @@ class MarketDataAnalyzer:
 
             # 打印任务总览
             logger.info("=" * 50)
-            logger.info("🚀 开始数据爬取任务（串行执行模式）")
+            logger.info("🚀 开始数据爬取任务（并发执行模式）")
             logger.info("=" * 50)
             logger.info(f"📊 汇率数据: {len(config.CURRENCY_PAIRS)} 项")
             logger.info(f"📈 日频数据: {len(config.DAILY_DATA_PAIRS)} 项")
@@ -907,63 +911,81 @@ class MarketDataAnalyzer:
                 else:
                     logger.warning(f"⚠️ [{progress:3d}%] |{progress_bar}| {sheet_name} ({data_type}): 数据为空")
 
-            # 1. 处理汇率数据（不需要WebDriver）
-            logger.info("开始爬取汇率数据...")
-            for pair, url in config.CURRENCY_PAIRS.items():
+            # 定义爬取函数
+            def crawl_exchange_rate_task(pair, url):
                 try:
                     data = self.crawl_exchange_rate(url)
                     if data:
-                        results[pair] = data
+                        with results_lock:
+                            results[pair] = data
                         stats.add_success(pair)
                         update_progress(pair, "currency")
+                        return True
                     else:
                         stats.add_failure(pair, "爬取返回空数据")
                         update_progress(pair, "currency", False)
+                        return False
                 except Exception as e:
                     stats.add_failure(pair, str(e))
                     update_progress(pair, "currency", False, str(e))
+                    return False
 
-            # 2. 处理日频数据（需要WebDriver）
-            logger.info("开始爬取日频数据...")
-            for sheet_name, info in config.DAILY_DATA_PAIRS.items():
+            def crawl_daily_monthly_task(sheet_name, info, data_type):
                 try:
-                    # 直接调用爬虫方法，而不是通过_crawl_with_webdriver
-                    crawler_method = getattr(self, info['crawler'])
-                    data = crawler_method(info['url'])
-
-                    if data:
-                        results[sheet_name] = data
-                        stats.add_success(sheet_name)
-                        update_progress(sheet_name, "daily")
-                    else:
-                        stats.add_failure(sheet_name, "爬取返回空数据")
-                        update_progress(sheet_name, "daily", False)
-                except Exception as e:
-                    stats.add_failure(sheet_name, str(e))
-                    update_progress(sheet_name, "daily", False, str(e))
-
-            # 3. 处理月度数据（需要WebDriver）
-            logger.info("开始爬取月度数据...")
-            for sheet_name, info in config.MONTHLY_DATA_PAIRS.items():
-                try:
-                    # 直接调用爬虫方法，而不是通过_crawl_with_webdriver
                     crawler_method = getattr(self, info['crawler'])
                     data = crawler_method(info['url'])
 
                     if data:
                         # 对于月度数据，只保留第一行
-                        if isinstance(data, list) and len(data) > 0:
-                            results[sheet_name] = data[0]
+                        if data_type == "monthly" and isinstance(data, list) and len(data) > 0:
+                            with results_lock:
+                                results[sheet_name] = data[0]
                         else:
-                            results[sheet_name] = data
+                            with results_lock:
+                                results[sheet_name] = data
                         stats.add_success(sheet_name)
-                        update_progress(sheet_name, "monthly")
+                        update_progress(sheet_name, data_type)
+                        return True
                     else:
                         stats.add_failure(sheet_name, "爬取返回空数据")
-                        update_progress(sheet_name, "monthly", False)
+                        update_progress(sheet_name, data_type, False)
+                        return False
                 except Exception as e:
                     stats.add_failure(sheet_name, str(e))
-                    update_progress(sheet_name, "monthly", False, str(e))
+                    update_progress(sheet_name, data_type, False, str(e))
+                    return False
+
+            # 使用线程锁保护共享资源
+            results_lock = threading.RLock()
+
+            # 创建两个线程池，一个用于汇率数据，一个用于日频和月度数据
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as exchange_rate_executor, \
+                 concurrent.futures.ThreadPoolExecutor(max_workers=1) as daily_monthly_executor:
+
+                # 1. 提交汇率数据爬取任务
+                logger.info("开始爬取汇率数据（并发执行）...")
+                exchange_rate_futures = []
+                for pair, url in config.CURRENCY_PAIRS.items():
+                    future = exchange_rate_executor.submit(crawl_exchange_rate_task, pair, url)
+                    exchange_rate_futures.append(future)
+
+                # 2. 提交日频和月度数据爬取任务
+                logger.info("开始爬取日频和月度数据（并发执行）...")
+                daily_monthly_futures = []
+
+                # 日频数据
+                for sheet_name, info in config.DAILY_DATA_PAIRS.items():
+                    future = daily_monthly_executor.submit(crawl_daily_monthly_task, sheet_name, info, "daily")
+                    daily_monthly_futures.append(future)
+
+                # 月度数据
+                for sheet_name, info in config.MONTHLY_DATA_PAIRS.items():
+                    future = daily_monthly_executor.submit(crawl_daily_monthly_task, sheet_name, info, "monthly")
+                    daily_monthly_futures.append(future)
+
+                # 等待所有任务完成
+                logger.info("等待所有爬取任务完成...")
+                concurrent.futures.wait(exchange_rate_futures + daily_monthly_futures)
 
             # 关闭WebDriver实例
             logger.info("爬取任务完成，关闭WebDriver实例...")
