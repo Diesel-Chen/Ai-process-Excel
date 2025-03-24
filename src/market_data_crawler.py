@@ -231,6 +231,12 @@ class MarketDataAnalyzer:
     _exchange_rate_driver = None  # 专用于汇率数据的WebDriver实例（禁用JavaScript）
     _exchange_rate_driver_lock = threading.RLock()  # 汇率数据WebDriver的锁
 
+    _daily_driver = None  # 专用于日频数据的WebDriver实例
+    _daily_driver_lock = threading.RLock()  # 日频数据WebDriver的锁
+
+    _monthly_driver = None  # 专用于月度数据的WebDriver实例
+    _monthly_driver_lock = threading.RLock()  # 月度数据WebDriver的锁
+
     _instance = None  # 添加单例实例变量
 
     def __init__(self):
@@ -371,22 +377,34 @@ class MarketDataAnalyzer:
 
         return driver
 
-    def get_driver(self, for_exchange_rate=False):
+    def get_driver(self, driver_type='default'):
         """
         获取WebDriver实例，如果不存在则初始化
 
         Args:
-            for_exchange_rate: 是否用于汇率数据爬取（禁用JavaScript）
+            driver_type: WebDriver类型，可选值：'default'(默认), 'exchange_rate'(汇率数据), 'daily'(日频数据), 'monthly'(月度数据)
 
         Returns:
             WebDriver实例
         """
-        if for_exchange_rate:
+        if driver_type == 'exchange_rate':
             # 获取专用于汇率数据的WebDriver实例（禁用JavaScript）
             with self._exchange_rate_driver_lock:
                 if self._exchange_rate_driver is None:
                     self._exchange_rate_driver = self._init_driver(disable_javascript=True)
                 return self._exchange_rate_driver
+        elif driver_type == 'daily':
+            # 获取专用于日频数据的WebDriver实例
+            with self._daily_driver_lock:
+                if self._daily_driver is None:
+                    self._daily_driver = self._init_driver(disable_javascript=False)
+                return self._daily_driver
+        elif driver_type == 'monthly':
+            # 获取专用于月度数据的WebDriver实例
+            with self._monthly_driver_lock:
+                if self._monthly_driver is None:
+                    self._monthly_driver = self._init_driver(disable_javascript=False)
+                return self._monthly_driver
         else:
             # 获取普通WebDriver实例（启用JavaScript）
             with self._driver_lock:
@@ -394,14 +412,14 @@ class MarketDataAnalyzer:
                     self._driver = self._init_driver(disable_javascript=False)
                 return self._driver
 
-    def close_driver(self, for_exchange_rate=False):
+    def close_driver(self, driver_type='default'):
         """
         关闭WebDriver实例
 
         Args:
-            for_exchange_rate: 是否关闭汇率数据专用的WebDriver实例
+            driver_type: WebDriver类型，可选值：'default'(默认), 'exchange_rate'(汇率数据), 'daily'(日频数据), 'monthly'(月度数据)
         """
-        if for_exchange_rate:
+        if driver_type == 'exchange_rate':
             # 关闭汇率数据专用的WebDriver实例
             with self._exchange_rate_driver_lock:
                 if self._exchange_rate_driver:
@@ -412,6 +430,28 @@ class MarketDataAnalyzer:
                         logger.warning(f"关闭汇率数据WebDriver时出错: {str(e)}")
                     finally:
                         self._exchange_rate_driver = None
+        elif driver_type == 'daily':
+            # 关闭日频数据专用的WebDriver实例
+            with self._daily_driver_lock:
+                if self._daily_driver:
+                    try:
+                        self._daily_driver.quit()
+                        logger.info("日频数据WebDriver已关闭")
+                    except Exception as e:
+                        logger.warning(f"关闭日频数据WebDriver时出错: {str(e)}")
+                    finally:
+                        self._daily_driver = None
+        elif driver_type == 'monthly':
+            # 关闭月度数据专用的WebDriver实例
+            with self._monthly_driver_lock:
+                if self._monthly_driver:
+                    try:
+                        self._monthly_driver.quit()
+                        logger.info("月度数据WebDriver已关闭")
+                    except Exception as e:
+                        logger.warning(f"关闭月度数据WebDriver时出错: {str(e)}")
+                    finally:
+                        self._monthly_driver = None
         else:
             # 关闭普通WebDriver实例
             with self._driver_lock:
@@ -533,14 +573,14 @@ class MarketDataAnalyzer:
     def crawl_exchange_rate(self, url):
         """优化后的汇率数据爬取方法（带详细调试日志）"""
         # 获取专用于汇率数据的WebDriver实例（禁用JavaScript）
-        driver = self.get_driver(for_exchange_rate=True)
+        driver = self.get_driver(driver_type='exchange_rate')
         logger.info(f"开始爬取汇率数据：{url}")
 
         try:
 
             # 设置超时策略
-            driver.set_page_load_timeout(30)
-            wait = WebDriverWait(driver, 25, poll_frequency=0.5)
+            driver.set_page_load_timeout(10)
+            wait = WebDriverWait(driver, 10, poll_frequency=0.25)
 
             try:
                 logger.debug("尝试加载页面...")
@@ -637,7 +677,7 @@ class MarketDataAnalyzer:
                     logger.debug(f"第 {idx} 行解析异常：{str(e)}")
                     continue
 
-            logger.info(f"成功解析 {len(results)} 条有效记录")
+            logger.debug(f"成功解析 {len(results)} 条有效记录")
             return results
 
         except Exception as e:
@@ -872,7 +912,7 @@ class MarketDataAnalyzer:
     def update_excel(self):
         """
         更新现有Excel文件，追加数据到对应sheet的最后一行（并发执行版本）
-        汇率数据爬取和日频/月度数据爬取并发执行，使用不同的WebDriver实例
+        汇率数据、日频数据和月度数据分别使用不同的WebDriver实例并行爬取
         """
         stats = CrawlStats()  # 创建统计对象
 
@@ -885,7 +925,7 @@ class MarketDataAnalyzer:
 
             # 打印任务总览
             logger.info("=" * 50)
-            logger.info("🚀 开始数据爬取任务（并发执行模式）")
+            logger.info("🚀 开始数据爬取任务（三线程并发执行模式）")
             logger.info("=" * 50)
             logger.info(f"📊 汇率数据: {len(config.CURRENCY_PAIRS)} 项")
             logger.info(f"📈 日频数据: {len(config.DAILY_DATA_PAIRS)} 项")
@@ -893,9 +933,9 @@ class MarketDataAnalyzer:
             logger.info(f"🔄 总任务数: {total_tasks} 项")
             logger.info("=" * 50)
 
-            # 初始化两个WebDriver实例
-            logger.info("⚙️ 初始化WebDriver实例...")
-            # 普通WebDriver实例已经通过get_driver()方法按需初始化
+            # 初始化三个WebDriver实例
+            logger.info("⚙️ 初始化三个WebDriver实例...")
+            # WebDriver实例将通过get_driver()方法按需初始化
 
             # 更新进度的辅助函数
             def update_progress(sheet_name, data_type, success=True, error_msg=None):
@@ -914,6 +954,8 @@ class MarketDataAnalyzer:
             # 定义爬取函数
             def crawl_exchange_rate_task(pair, url):
                 try:
+                    # 使用专用于汇率数据的WebDriver
+                    driver = self.get_driver(driver_type='exchange_rate')
                     data = self.crawl_exchange_rate(url)
                     if data:
                         with results_lock:
@@ -930,37 +972,62 @@ class MarketDataAnalyzer:
                     update_progress(pair, "currency", False, str(e))
                     return False
 
-            def crawl_daily_monthly_task(sheet_name, info, data_type):
+            def crawl_daily_task(sheet_name, info):
                 try:
+                    # 使用专用于日频数据的WebDriver
+                    driver = self.get_driver(driver_type='daily')
+                    crawler_method = getattr(self, info['crawler'])
+                    data = crawler_method(info['url'])
+
+                    if data:
+                        with results_lock:
+                            results[sheet_name] = data
+                        stats.add_success(sheet_name)
+                        update_progress(sheet_name, "daily")
+                        return True
+                    else:
+                        stats.add_failure(sheet_name, "爬取返回空数据")
+                        update_progress(sheet_name, "daily", False)
+                        return False
+                except Exception as e:
+                    stats.add_failure(sheet_name, str(e))
+                    update_progress(sheet_name, "daily", False, str(e))
+                    return False
+
+            def crawl_monthly_task(sheet_name, info):
+                try:
+                    # 使用专用于月度数据的WebDriver
+                    driver = self.get_driver(driver_type='monthly')
                     crawler_method = getattr(self, info['crawler'])
                     data = crawler_method(info['url'])
 
                     if data:
                         # 对于月度数据，只保留第一行
-                        if data_type == "monthly" and isinstance(data, list) and len(data) > 0:
+                        if isinstance(data, list) and len(data) > 0:
                             with results_lock:
                                 results[sheet_name] = data[0]
                         else:
                             with results_lock:
                                 results[sheet_name] = data
                         stats.add_success(sheet_name)
-                        update_progress(sheet_name, data_type)
+                        update_progress(sheet_name, "monthly")
                         return True
                     else:
                         stats.add_failure(sheet_name, "爬取返回空数据")
-                        update_progress(sheet_name, data_type, False)
+                        update_progress(sheet_name, "monthly", False)
                         return False
                 except Exception as e:
                     stats.add_failure(sheet_name, str(e))
-                    update_progress(sheet_name, data_type, False, str(e))
+                    update_progress(sheet_name, "monthly", False, str(e))
                     return False
 
             # 使用线程锁保护共享资源
             results_lock = threading.RLock()
 
-            # 创建两个线程池，一个用于汇率数据，一个用于日频和月度数据
+            # 创建三个线程池，分别用于汇率数据、日频数据和月度数据
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as exchange_rate_executor, \
-                 concurrent.futures.ThreadPoolExecutor(max_workers=1) as daily_monthly_executor:
+                 concurrent.futures.ThreadPoolExecutor(max_workers=1) as daily_executor, \
+                 concurrent.futures.ThreadPoolExecutor(max_workers=1) as monthly_executor:
 
                 # 1. 提交汇率数据爬取任务
                 logger.info("开始爬取汇率数据（并发执行）...")
@@ -969,28 +1036,29 @@ class MarketDataAnalyzer:
                     future = exchange_rate_executor.submit(crawl_exchange_rate_task, pair, url)
                     exchange_rate_futures.append(future)
 
-                # 2. 提交日频和月度数据爬取任务
-                logger.info("开始爬取日频和月度数据（并发执行）...")
-                daily_monthly_futures = []
-
-                # 日频数据
+                # 2. 提交日频数据爬取任务
+                logger.info("开始爬取日频数据（并发执行）...")
+                daily_futures = []
                 for sheet_name, info in config.DAILY_DATA_PAIRS.items():
-                    future = daily_monthly_executor.submit(crawl_daily_monthly_task, sheet_name, info, "daily")
-                    daily_monthly_futures.append(future)
+                    future = daily_executor.submit(crawl_daily_task, sheet_name, info)
+                    daily_futures.append(future)
 
-                # 月度数据
+                # 3. 提交月度数据爬取任务
+                logger.info("开始爬取月度数据（并发执行）...")
+                monthly_futures = []
                 for sheet_name, info in config.MONTHLY_DATA_PAIRS.items():
-                    future = daily_monthly_executor.submit(crawl_daily_monthly_task, sheet_name, info, "monthly")
-                    daily_monthly_futures.append(future)
+                    future = monthly_executor.submit(crawl_monthly_task, sheet_name, info)
+                    monthly_futures.append(future)
 
                 # 等待所有任务完成
                 logger.info("等待所有爬取任务完成...")
-                concurrent.futures.wait(exchange_rate_futures + daily_monthly_futures)
+                concurrent.futures.wait(exchange_rate_futures + daily_futures + monthly_futures)
 
             # 关闭WebDriver实例
             logger.info("爬取任务完成，关闭WebDriver实例...")
-            self.close_driver(for_exchange_rate=False)  # 关闭普通WebDriver
-            self.close_driver(for_exchange_rate=True)   # 关闭汇率数据WebDriver
+            self.close_driver(driver_type='exchange_rate')  # 关闭汇率数据WebDriver
+            self.close_driver(driver_type='daily')         # 关闭日频数据WebDriver
+            self.close_driver(driver_type='monthly')       # 关闭月度数据WebDriver
 
             logger.info("=" * 50)
             logger.info("🏁 数据爬取完成，准备更新Excel文件...")
@@ -1118,20 +1186,13 @@ class MarketDataAnalyzer:
         """
         爬取钢铁价格数据（优化版）
         """
-        driver = self.get_driver()
+        driver = self.get_driver(driver_type='daily')
         logger.debug(f"正在请求URL: {url}")
 
         try:
-            # 针对特定站点增加超时时间
-            if "mysteel.com" in url:  # Steel price站点
-                driver.set_page_load_timeout(60)  # 增加到60秒
-                wait = WebDriverWait(driver, 30)  # 增加等待时间
-            elif "euribor-rates.eu" in url:  # ESTER站点
-                driver.set_page_load_timeout(60)
-                wait = WebDriverWait(driver, 30)
-            else:
-                driver.set_page_load_timeout(20)
-                wait = WebDriverWait(driver, 10)
+
+            driver.set_page_load_timeout(30)
+            wait = WebDriverWait(driver, 20, poll_frequency=0.25)
 
             driver.get(url)
 
@@ -1204,7 +1265,7 @@ class MarketDataAnalyzer:
         """
         爬取Shibor利率数据（优化版）
         """
-        driver = self.get_driver()
+        driver = self.get_driver(driver_type='daily')
         logger.debug(f"正在请求URL: {url}")
 
         try:
@@ -1255,7 +1316,7 @@ class MarketDataAnalyzer:
         """
         爬取LPR数据（优化版）
         """
-        driver = self.get_driver()
+        driver = self.get_driver(driver_type='daily')
         logger.debug(f"正在请求URL: {url}")
 
         try:
@@ -1314,7 +1375,7 @@ class MarketDataAnalyzer:
         """
         爬取SOFR数据（优化版）
         """
-        driver = self.get_driver()
+        driver = self.get_driver(driver_type='daily')
         logger.debug(f"正在请求URL: {url}")
 
         try:
@@ -1368,7 +1429,7 @@ class MarketDataAnalyzer:
         """
         爬取ESTER数据（优化版）
         """
-        driver = self.get_driver()
+        driver = self.get_driver(driver_type='daily')
         logger.debug(f"正在请求URL: {url}")
 
         try:
@@ -1425,16 +1486,16 @@ class MarketDataAnalyzer:
         """
         爬取JPY利率数据（优化版）
         """
-        driver = self.get_driver()
+        driver = self.get_driver(driver_type='daily')
         logger.debug(f"正在请求URL: {url}")
 
         try:
             # 设置页面加载超时
-            driver.set_page_load_timeout(30)
+            driver.set_page_load_timeout(10)
             driver.get(url)
 
             # 使用显式等待，减少固定等待时间
-            wait = WebDriverWait(driver, 15)
+            wait = WebDriverWait(driver, 10)
 
             # 使用更精确的选择器
             table = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table[class='table ']")))
@@ -1475,16 +1536,16 @@ class MarketDataAnalyzer:
         """
         爬取美国利率数据
         """
-        driver = self.get_driver()
+        driver = self.get_driver(driver_type='monthly')
         logger.debug(f"正在请求URL: {url}")
 
         try:
             # 设置页面加载超时
-            driver.set_page_load_timeout(30)
+            driver.set_page_load_timeout(10)
             driver.get(url)
 
             # 使用显式等待，减少固定等待时间
-            wait = WebDriverWait(driver, 15)
+            wait = WebDriverWait(driver, 10)
             table = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-model")))
 
             # 获取有效数据行（跳过表头）
@@ -1525,16 +1586,16 @@ class MarketDataAnalyzer:
         """
         爬取进出口贸易数据
         """
-        driver = self.get_driver()
+        driver = self.get_driver(driver_type='monthly')
         logger.debug(f"正在请求URL: {url}")
 
         try:
             # 设置页面加载超时
-            driver.set_page_load_timeout(30)
+            driver.set_page_load_timeout(10)
             driver.get(url)
 
             # 使用显式等待，减少固定等待时间
-            wait = WebDriverWait(driver, 15)
+            wait = WebDriverWait(driver, 10)
             table = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-model")))
 
             # 获取有效数据行（跳过表头）
@@ -1582,16 +1643,16 @@ class MarketDataAnalyzer:
         """
         爬取货币供应数据
         """
-        driver = self.get_driver()
+        driver = self.get_driver(driver_type='monthly')
         logger.debug(f"正在请求URL: {url}")
 
         try:
             # 设置页面加载超时
-            driver.set_page_load_timeout(30)
+            driver.set_page_load_timeout(10)
             driver.get(url)
 
             # 使用显式等待，减少固定等待时间
-            wait = WebDriverWait(driver, 15)
+            wait = WebDriverWait(driver, 10)
             table = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-model")))
 
             # 获取有效数据行（跳过表头）
@@ -1638,16 +1699,16 @@ class MarketDataAnalyzer:
         """
         爬取ppi数据
         """
-        driver = self.get_driver()
+        driver = self.get_driver(driver_type='monthly')
         logger.debug(f"正在请求URL: {url}")
 
         try:
             # 设置页面加载超时
-            driver.set_page_load_timeout(30)
+            driver.set_page_load_timeout(10)
             driver.get(url)
 
             # 使用显式等待，减少固定等待时间
-            wait = WebDriverWait(driver, 15)
+            wait = WebDriverWait(driver, 10)
             table = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-model")))
 
             # 获取有效数据行（跳过表头）
@@ -1688,16 +1749,16 @@ class MarketDataAnalyzer:
         """
         爬取cpi数据
         """
-        driver = self.get_driver()
+        driver = self.get_driver(driver_type='monthly')
         logger.debug(f"正在请求URL: {url}")
 
         try:
             # 设置页面加载超时
-            driver.set_page_load_timeout(30)
+            driver.set_page_load_timeout(10)
             driver.get(url)
 
             # 使用显式等待，减少固定等待时间
-            wait = WebDriverWait(driver, 15)
+            wait = WebDriverWait(driver, 10)
             table = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-model")))
 
             # 获取有效数据行（跳过表头）
@@ -1747,16 +1808,16 @@ class MarketDataAnalyzer:
         """
         爬取pmi数据
         """
-        driver = self.get_driver()
+        driver = self.get_driver(driver_type='monthly')
         logger.debug(f"正在请求URL: {url}")
 
         try:
             # 设置页面加载超时
-            driver.set_page_load_timeout(30)
+            driver.set_page_load_timeout(10)
             driver.get(url)
 
             # 使用显式等待，减少固定等待时间
-            wait = WebDriverWait(driver, 15)
+            wait = WebDriverWait(driver, 10)
             table = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-model")))
 
             # 获取有效数据行（跳过表头）
@@ -1798,16 +1859,16 @@ class MarketDataAnalyzer:
         """
         爬取 中国 新增信贷数据
         """
-        driver = self.get_driver()
+        driver = self.get_driver(driver_type='monthly')
         logger.debug(f"正在请求URL: {url}")
 
         try:
             # 设置页面加载超时
-            driver.set_page_load_timeout(30)
+            driver.set_page_load_timeout(10)
             driver.get(url)
 
             # 使用显式等待，减少固定等待时间
-            wait = WebDriverWait(driver, 15)
+            wait = WebDriverWait(driver, 10)
             table = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.table-model")))
 
             # 获取有效数据行（跳过表头）
@@ -1874,10 +1935,11 @@ if __name__ == "__main__":
             logger.info("检测到用户中断，正在关闭资源...")
         except Exception as e:
             logger.error(f"程序执行出错: {str(e)}")
-        finally:
-            # 确保在程序结束时关闭WebDriver
             analyzer.close_driver()
-            logger.info("程序资源已清理")
+            analyzer.close_driver(driver_type='exchange_rate')  # 关闭汇率数据WebDriver
+            analyzer.close_driver(driver_type='daily')         # 关闭日频数据WebDriver
+            analyzer.close_driver(driver_type='monthly')       # 关闭月度数据WebDriver
+
 
         print("\n程序运行完成")
 
