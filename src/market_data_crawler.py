@@ -99,9 +99,30 @@ def setup_logging(debug=False):
     # 文件处理器 - 详细日志保存到文件
     file_handler = logging.FileHandler('market_data_crawler.log')
     file_handler.setLevel(level)
+    
+    # 创建logs目录下的日志文件处理器
+    # 确保logs目录存在
+    logs_dir = 'logs'
+    if not os.path.exists(logs_dir):
+        os.makedirs(logs_dir)
+    
+    # 创建带时间戳的日志文件名
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    logs_file_path = os.path.join(logs_dir, f'crawler_{timestamp}.log')
+    
+    # 创建logs目录下的文件处理器
+    logs_file_handler = logging.FileHandler(logs_file_path)
+    logs_file_handler.setLevel(level)
     file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
+    
+    # 设置logs目录下文件处理器格式
+    logs_file_handler.setFormatter(file_formatter)
+    logger.addHandler(logs_file_handler)
+    
+    # 记录日志启动信息
+    logger.info(f"日志已配置：控制台、根目录文件和logs/{os.path.basename(logs_file_path)}")
 
 def log_execution_time(func):
     """记录函数执行时间的装饰器"""

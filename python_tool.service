@@ -3,11 +3,12 @@ Description=Market Data Crawler Service
 After=network.target
 
 [Service]
-User=www-data
-Group=www-data
-WorkingDirectory=/root/Ai-process-Excel
+User=root
+Group=root
+CapabilityBoundingSet=  # 禁用所有特权能力
+WorkingDirectory=/usr/local/src/Ai-process-Excel
 # 不再需要单独设置Python环境，start.py会自动检测和激活虚拟环境
-ExecStart=python start.py --mode dev --port 8080 --no-browser
+ExecStart=/usr/local/src/Ai-process-Excel/venv/bin/python start.py --mode dev --port 8080 --no-browser
 Restart=on-failure
 RestartSec=5s
 
