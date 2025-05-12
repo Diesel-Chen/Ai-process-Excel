@@ -103,7 +103,7 @@ function connectLogStream() {
   // 用于收集摘要信息的变量
   let collectingSummary = false;
   let summaryText = "";
-  
+
   eventSource.onmessage = function (event) {
     console.log("收到日志数据:", event.data);
     const logContainer = document.getElementById("logContainer");
@@ -130,10 +130,10 @@ function connectLogStream() {
           console.error("无效的日志条目:", log);
           return;
         }
-        
+
         // 检查是否是摘要信息的开始或结束标记
         console.log(`检查日志消息: "${log.message}"`); // 打印每条日志消息以进行调试
-        
+
         if (log.message.trim() === "SUMMARY_START") {
           console.log("检测到摘要开始标记");
           collectingSummary = true;
@@ -149,7 +149,7 @@ function connectLogStream() {
           // 显示摘要信息
           console.log("摘要文本:", summaryText);
           console.log("摘要元素:", logSummaryContent ? "存在" : "不存在", logSummary ? "存在" : "不存在");
-          
+
           if (summaryText && logSummaryContent && logSummary) {
             logSummaryContent.textContent = summaryText;
             logSummary.style.display = "block";
@@ -164,10 +164,10 @@ function connectLogStream() {
           }
           return;
         }
-        
+
         // 如果正在收集摘要信息，则将日志消息添加到摘要文本中
         if (collectingSummary) {
-          console.log(`添加摘要行: "${log.message}"`); 
+          console.log(`添加摘要行: "${log.message}"`);
           summaryText += log.message + "\n";
           return;
         }
@@ -187,17 +187,17 @@ function connectLogStream() {
     console.error("日志流连接错误:", error);
     const logContainer = document.getElementById("logContainer");
 
-    if (logContainer) {
-      const errorEntry = document.createElement("div");
-      errorEntry.className = "log-entry log-error";
-      errorEntry.innerHTML = `
-        <span class="log-timestamp">${new Date().toLocaleTimeString()}</span>
-        <span class="log-icon">❌</span>
-        <span class="log-level">ERROR</span>
-        <span class="log-message">日志流连接断开，正在尝试重新连接...</span>
-      `;
-      logContainer.appendChild(errorEntry);
-    }
+    // if (logContainer) {
+    //   const errorEntry = document.createElement("div");
+    //   errorEntry.className = "log-entry log-error";
+    //   errorEntry.innerHTML = `
+    //     <span class="log-timestamp">${new Date().toLocaleTimeString()}</span>
+    //     <span class="log-icon">❌</span>
+    //     <span class="log-level">ERROR</span>
+    //     <span class="log-message">日志流连接断开，正在尝试重新连接...</span>
+    //   `;
+    //   logContainer.appendChild(errorEntry);
+    // }
 
     // 如果连接关闭，尝试重新连接
     if (eventSource.readyState === EventSource.CLOSED) {

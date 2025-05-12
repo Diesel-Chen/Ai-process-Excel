@@ -99,28 +99,28 @@ def setup_logging(debug=False):
     # 文件处理器 - 详细日志保存到文件
     file_handler = logging.FileHandler('market_data_crawler.log')
     file_handler.setLevel(level)
-    
+
     # 创建logs目录下的日志文件处理器
     # 确保logs目录存在
     logs_dir = 'logs'
     if not os.path.exists(logs_dir):
         os.makedirs(logs_dir)
-    
+
     # 创建带时间戳的日志文件名
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     logs_file_path = os.path.join(logs_dir, f'crawler_{timestamp}.log')
-    
+
     # 创建logs目录下的文件处理器
     logs_file_handler = logging.FileHandler(logs_file_path)
     logs_file_handler.setLevel(level)
     file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
-    
+
     # 设置logs目录下文件处理器格式
     logs_file_handler.setFormatter(file_formatter)
     logger.addHandler(logs_file_handler)
-    
+
     # 记录日志启动信息
     logger.info(f"日志已配置：控制台、根目录文件和logs/{os.path.basename(logs_file_path)}")
 
@@ -1128,36 +1128,34 @@ class MarketDataAnalyzer:
 
                     # 对Import and Export进行特殊处理
                     if sheet_name == 'Import and Export':
-                        # 即使日期相同，也需要检查数据是否从"-"更新为具体数值
-                        need_update = False
+                        # 检查最后一行的数据是否完整（没有"-"）
+                        last_row_complete = True
+                        columns = config.COLUMN_DEFINITIONS[sheet_name]
 
-                        # 如果日期不同，直接更新
-                        if str(last_date_value) != str(new_date):
-                            need_update = True
-                        else:
-                            # 日期相同，检查各列数据是否有从"-"更新为具体数值的情况
-                            columns = config.COLUMN_DEFINITIONS[sheet_name]
-                            for col_idx, col_name in enumerate(columns, 1):
-                                if col_name == '日期':
-                                    continue
+                        # 检查最后一行的每个单元格（除了日期列）
+                        for col_idx, col_name in enumerate(columns, 1):
+                            if col_name == '日期':
+                                continue
 
-                                # 获取Excel中的当前值
-                                current_value = ws.cell(row=last_row, column=col_idx).value
-                                # 获取新数据中的值
-                                new_value = data.get(col_name, '')
+                            current_value = ws.cell(row=last_row, column=col_idx).value
+                            if current_value == '-' or current_value == '':
+                                last_row_complete = False
+                                break
 
-                                # 检查是否从"-"更新为具体数值
-                                if (current_value == '-' or current_value == '') and new_value != '-' and new_value != '':
-                                    need_update = True
-                                    break
-
-                        if need_update:
-                            self.write_monthly_data(ws, data, last_row)  # 覆盖当前行
+                        if not last_row_complete:
+                            # 如果最后一行不完整，用新数据更新这一行
+                            self.write_monthly_data(ws, data, last_row)
                             excel_updates.append(sheet_name)
                             updated_sheets.append(sheet_name)
-                            logger.info(f"📝 更新 {sheet_name}: {new_date}")
+                            logger.info(f"📝 更新不完整行 {sheet_name}: {new_date}")
+                        elif str(last_date_value) != str(new_date):
+                            # 如果最后一行完整且日期不同，写入新行
+                            self.write_monthly_data(ws, data, last_row + 1)
+                            excel_updates.append(sheet_name)
+                            updated_sheets.append(sheet_name)
+                            logger.info(f"📝 添加新行 {sheet_name}: {new_date}")
                         else:
-                            logger.info(f"✓ {sheet_name} 数据已是最新")
+                            logger.info(f"✓ {sheet_name} 数据已是最新且完整")
                     else:
                         # 其他月度数据的常规处理
                         if str(last_date_value) != str(new_date):
