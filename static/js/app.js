@@ -1,5 +1,10 @@
 let eventSource = null;
 let statusCheckInterval = null;
+let queueInterval = null;
+let currentJobId = null;
+let jobSummaryReceived = false; // 本次任务是否已收到 SHOW_SUMMARY
+let excelUnlocked = false; // 本次任务是否已释放 Excel 文件锁
+let firstCompletedAt = null; // 第一次检测到 status=completed 的时间戳
 let apiBaseUrl = "/api"; // API基础路径，可根据部署环境修改
 
 // 添加日志过滤状态
@@ -58,6 +63,9 @@ function startUpdate() {
   // 清空日志容器并隐藏摘要
   logContainer.innerHTML = "";
   logSummary.style.display = "none";
+  jobSummaryReceived = false;
+  excelUnlocked = false;
+  firstCompletedAt = null;
 
   // 更新按钮状态
   updateBtn.disabled = true;
@@ -76,11 +84,27 @@ function startUpdate() {
     .then((data) => {
       console.log(data);
 
-      // 开始监听日志流
-      connectLogStream();
+      // 显示队列信息
+      if (data.job_id) {
+        currentJobId = data.job_id;
+      }
+      if (data.position && data.position > 1) {
+        statusMessage.innerHTML = `
+          <span class="spinner-border spinner-border-sm text-warning" role="status" aria-hidden="true"></span>
+          已加入队列，当前排队位置第 <b>${data.position}</b> 位，请稍候...`;
+      }
+
+      // 开始监听日志流（即使在队列中，后端会在任务启动时清空并写入日志）
+      connectLogStream(currentJobId);
 
       // 开始定期检查状态
       statusCheckInterval = setInterval(checkStatus, 2000);
+
+      // 开始轮询队列看板
+      if (queueInterval) clearInterval(queueInterval);
+      queueInterval = setInterval(pollQueue, 2000);
+      // 立即拉取一次看板
+      pollQueue();
     })
     .catch((error) => {
       console.error("Error:", error);
@@ -91,14 +115,15 @@ function startUpdate() {
 }
 
 // 连接日志流
-function connectLogStream() {
+function connectLogStream(jobId = null) {
   // 如果已经有连接，先关闭
   if (eventSource) {
     eventSource.close();
   }
 
   console.log("开始连接日志流...");
-  eventSource = new EventSource(`${apiBaseUrl}/logs`);
+  const url = jobId ? `${apiBaseUrl}/logs?job_id=${encodeURIComponent(jobId)}` : `${apiBaseUrl}/logs`;
+  eventSource = new EventSource(url);
 
   // 用于收集摘要信息的变量
   let collectingSummary = false;
@@ -143,6 +168,12 @@ function connectLogStream() {
           console.log("检测到摘要结束标记");
           collectingSummary = false;
           console.log("摘要文本已收集完成:", summaryText);
+          // 将 SUMMARY_END 也视为摘要就绪的信号（与 SHOW_SUMMARY 等效）
+          if (summaryText && logSummaryContent && logSummary) {
+            logSummaryContent.textContent = summaryText;
+            logSummary.style.display = "block";
+            jobSummaryReceived = true;
+          }
           return;
         } else if (log.message.trim() === "SHOW_SUMMARY") {
           console.log("检测到显示摘要消息");
@@ -155,6 +186,7 @@ function connectLogStream() {
             logSummary.style.display = "block";
             logContainer.scrollTop = logContainer.scrollHeight;
             console.log("摘要显示已设置");
+            jobSummaryReceived = true; // 标记已收到任务结束摘要
           } else {
             console.error("无法显示摘要: ", {
               summaryText: Boolean(summaryText),
@@ -162,6 +194,10 @@ function connectLogStream() {
               logSummary: Boolean(logSummary)
             });
           }
+          return;
+        } else if (log.message.trim() === "EXCEL_UNLOCKED") {
+          // 后端在释放 Excel 文件锁后打点，告知可以进行下载
+          excelUnlocked = true;
           return;
         }
 
@@ -226,15 +262,31 @@ function connectLogStream() {
 
 // 检查爬虫状态
 function checkStatus() {
-  fetch(`${apiBaseUrl}/status`)
+  const statusUrl = currentJobId
+    ? `${apiBaseUrl}/status?job_id=${encodeURIComponent(currentJobId)}`
+    : `${apiBaseUrl}/status`;
+  fetch(statusUrl)
     .then((response) => response.json())
     .then((data) => {
       const updateBtn = document.getElementById("updateBtn");
       const downloadBtn = document.getElementById("downloadBtn");
       const statusMessage = document.getElementById("statusMessage");
 
-      // 如果爬虫已完成
+      // 如果该 job 已完成（不依赖全局）
       if (data.status === "completed") {
+        // 若还未收到 SHOW_SUMMARY，继续保持连接，等待日志收尾
+        if (!jobSummaryReceived || !excelUnlocked) {
+          // 记录第一次完成时间
+          if (!firstCompletedAt) firstCompletedAt = Date.now();
+          const elapsed = Date.now() - firstCompletedAt;
+          // 超过 3s 仍未收到标记，则容错放行，避免卡死
+          if (elapsed > 3000) {
+            console.warn("Grace finishing: summary or excel unlock not received in time");
+          } else {
+            statusMessage.innerHTML = '<span class="text-info">ℹ</span> 正在收尾并生成摘要，请稍候...';
+            return;
+          }
+        }
         // 清除定时器
         clearInterval(statusCheckInterval);
         statusCheckInterval = null;
@@ -244,6 +296,10 @@ function checkStatus() {
           eventSource.close();
           eventSource = null;
         }
+
+        // 队列看板保持轮询，但降低频率
+        if (queueInterval) clearInterval(queueInterval);
+        queueInterval = setInterval(pollQueue, 5000);
 
         // 更新UI
         updateBtn.disabled = false;
@@ -260,6 +316,27 @@ function checkStatus() {
           downloadBtn.style.display = "inline-block";
           downloadBtn.disabled = false;
         }
+      } else if (data.status === "failed") {
+        // 任务失败
+        clearInterval(statusCheckInterval);
+        statusCheckInterval = null;
+        if (eventSource) {
+          eventSource.close();
+          eventSource = null;
+        }
+        if (queueInterval) clearInterval(queueInterval);
+        queueInterval = setInterval(pollQueue, 5000);
+
+        updateBtn.disabled = false;
+        updateBtn.innerHTML = '<span class="button-text">更新数据</span>';
+        statusMessage.innerHTML = `<span class="text-danger">✗</span> 任务失败：${data.error || '未知错误'}`;
+        downloadBtn.style.display = "inline-block";
+        downloadBtn.disabled = false;
+      } else if (data.status === "queued" && data.position) {
+        // 若仍在排队，刷新提示位置
+        statusMessage.innerHTML = `
+          <span class="spinner-border spinner-border-sm text-warning" role="status" aria-hidden="true"></span>
+          已加入队列，当前排队位置第 <b>${data.position}</b> 位，请稍候...`;
       }
     })
     .catch((error) => {
@@ -308,6 +385,9 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 
   createFilterUI();
+  // 初始拉取一次队列看板（页面刷新时也能看到状态）
+  pollQueue();
+  queueInterval = setInterval(pollQueue, 5000);
 });
 
 function appendLog(log) {
@@ -353,6 +433,77 @@ function appendLog(log) {
 
   // 自动滚动到底部
   logContainer.scrollTop = logContainer.scrollHeight;
+}
+
+// 队列看板：轮询后端 /api/queue
+function pollQueue() {
+  fetch(`${apiBaseUrl}/queue`)
+    .then((res) => res.json())
+    .then(renderQueue)
+    .catch((err) => console.error("获取队列信息失败:", err));
+}
+
+function renderQueue(data) {
+  const runningEl = document.getElementById("queueRunning");
+  const queuedEl = document.getElementById("queueQueued");
+  const historyEl = document.getElementById("queueHistory");
+  if (!runningEl || !queuedEl || !historyEl) return;
+
+  // Running
+  if (data.running) {
+    runningEl.innerHTML = `
+      <div class="list-group-item d-flex justify-content-between align-items-center">
+        <div>
+          <div>Job ID: <code>${data.running.id}</code></div>
+          <div class="small text-muted">状态：${data.running.status}</div>
+        </div>
+        <span class="badge bg-primary">运行中</span>
+      </div>`;
+  } else if (data.running_flag) {
+    runningEl.innerHTML = `<div class="list-group-item">任务运行中...</div>`;
+  } else {
+    runningEl.innerHTML = `<div class="list-group-item">暂无运行中的任务</div>`;
+  }
+
+  // Queued
+  if (data.queued && data.queued.length > 0) {
+    queuedEl.innerHTML = data.queued
+      .map(
+        (j) => `
+        <div class="list-group-item d-flex justify-content-between align-items-center">
+          <div>
+            <div>Job ID: <code>${j.id}</code></div>
+            <div class="small text-muted">排队位置：第 ${j.position} 位</div>
+          </div>
+          <span class="badge bg-warning text-dark">排队中</span>
+        </div>`
+      )
+      .join("");
+  } else {
+    queuedEl.innerHTML = `<div class="list-group-item">队列为空</div>`;
+  }
+
+  // History
+  if (data.history && data.history.length > 0) {
+    historyEl.innerHTML = data.history
+      .map((j) => {
+        const ok = j.status === "completed" && j.updated;
+        const badge = j.status === "failed" ?
+          '<span class="badge bg-danger">失败</span>' :
+          `<span class="badge ${ok ? 'bg-success' : 'bg-secondary'}">${ok ? '已更新' : '无变动'}</span>`;
+        return `
+        <div class="list-group-item d-flex justify-content-between align-items-center">
+          <div>
+            <div>Job ID: <code>${j.id}</code></div>
+            <div class="small text-muted">状态：${j.status}${j.error ? '，错误：' + j.error : ''}</div>
+          </div>
+          ${badge}
+        </div>`;
+      })
+      .join("");
+  } else {
+    historyEl.innerHTML = `<div class="list-group-item">暂无历史</div>`;
+  }
 }
 
 // 更新 CSS 样式
@@ -420,6 +571,14 @@ style.textContent = `
 
     .filter-checkbox:hover {
         border-color: #4a90e2;
+    }
+
+    /* 队列看板固定高度，仅显示约两条，超出滚动 */
+    #queueRunning, #queueQueued, #queueHistory {
+        max-height: 120px; /* 约两条 list-group-item 的高度 */
+        overflow-y: auto;
+        border: 1px solid #e1e4e8;
+        border-radius: 6px;
     }
 
     #logContainer {

@@ -8,6 +8,8 @@ import time
 import random
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment
+from openpyxl import Workbook
+import zipfile
 
 import platform
 from datetime import datetime
@@ -31,6 +33,7 @@ from selenium.webdriver import ActionChains
 import time
 import concurrent.futures
 from functools import wraps
+import fcntl
 
 # 在脚本开头导入并配置连接池
 from urllib3.poolmanager import PoolManager
@@ -317,9 +320,16 @@ class MarketDataAnalyzer:
             # 首先尝试使用Chrome
             from webdriver_manager.chrome import ChromeDriverManager
 
+            driver_dir = ChromeDriverManager().install()
+            # 正确的chromedriver路径应该是目录中的chromedriver文件
+            driver_path = os.path.join(os.path.dirname(driver_dir), 'chromedriver')
+
+            # 确保文件有执行权限
+            os.chmod(driver_path, 0o755)
+
             # driver_path = ChromeDriverManager().install()
-            driver_path ='/Users/dieselchen/.wdm/drivers/chromedriver/mac64/134.0.6998.165/chromedriver-mac-x64/chromedriver'
-            # driver_path='/root/.wdm/drivers/chromedriver/linux64/134.0.6998.165/chromedriver-linux64/chromedriver'
+            # driver_path ='/Users/dieselchen/.wdm/drivers/chromedriver/mac64/134.0.6998.165/chromedriver-mac-x64/chromedriver'
+            # driver_path='/root/.wdm/drivers/chromedriver/linux64/140.0.7339.80/chromedriver-linux64/chromedriver'
 
             service = Service(executable_path=driver_path)
 
@@ -878,8 +888,19 @@ class MarketDataAnalyzer:
             return True
         else:
             # 如果没找到最后一行日期，记录日志
-            logger.error(f"{sheet_name}: 爬取的最新数据并没有匹配上现有数据，无法更新.现有数据{data}，最后一行日期{last_date_obj}")
-            return False
+            logger.warning(f"{sheet_name}: 爬取的最新数据并没有匹配上现有数据，无法更新.现有数据{data}，最后一行日期{last_date_obj}")
+            # 进一步处理：视为长期未更新，将现有数据倒序追加到Excel
+            try:
+                logger.warning(f"{sheet_name}: 未找到匹配日期，判定为长期未更新。将倒序追加 {len(data)} 条数据到Excel")
+                # 从最旧到最新写入：因为data[0]通常是最新，因此倒序遍历
+                for idx in range(len(data) - 1, -1, -1):
+                    target_row = last_row + (len(data) - idx)
+                    self.write_single_daily_row(worksheet, data[idx], target_row, sheet_name)
+                    logger.debug(f"{sheet_name}: 倒序追加 —— 已在第 {target_row} 行写入索引 {idx} 的数据")
+                return True
+            except Exception as e:
+                logger.error(f"{sheet_name}: 倒序追加写入失败: {str(e)}")
+                return False
 
     def write_single_daily_row(self, worksheet, row_data, row_num, sheet_name):
         """
@@ -1093,7 +1114,23 @@ class MarketDataAnalyzer:
             if not os.path.exists(excel_path):
                 raise FileNotFoundError(f"Excel文件不存在: {excel_path}。请确保文件存在于正确的位置。")
 
-            wb = load_workbook(excel_path)
+            # 跨进程文件锁，防止并发读写导致损坏
+            lock_path = excel_path + ".lock"
+            lock_fd = None
+            try:
+                lock_fd = open(lock_path, 'w')
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                logger.debug("已获取Excel文件锁")
+
+                # 尝试加载工作簿；若失败则不修改原文件，直接返回失败
+                try:
+                    wb = load_workbook(excel_path)
+                except Exception as e:
+                    logger.error(f"无法打开Excel文件（可能不是有效的xlsx或被占用）：{str(e)}")
+                    return False
+            except Exception as le:
+                logger.error(f"获取Excel文件锁失败: {str(le)}")
+                return False
 
             updated_sheets = []  # 记录已更新的工作表
 
@@ -1177,16 +1214,24 @@ class MarketDataAnalyzer:
             logger.info("=" * 50)
             summary_text = stats.print_summary()
 
-            # 添加一个特殊的日志消息，标记为摘要信息
-            # logger.info("SUMMARY_START")
-            # logger.info(summary_text)
-            # logger.info("SUMMARY_END")
+            # 添加一个特殊的日志消息，标记为摘要信息（前端据此收集并在收到 SHOW_SUMMARY 时显示）
+            try:
+                logger.info("SUMMARY_START")
+                for line in summary_text.splitlines():
+                    if line.strip():
+                        logger.info(line)
+                logger.info("SUMMARY_END")
+            except Exception:
+                # 回退：直接输出文本
+                logger.info(summary_text)
 
             # 保存Excel文件
             if excel_updates:
                 logger.info(f"💾 保存Excel文件: {os.path.basename(excel_path)}")
                 try:
-                    wb.save(excel_path)
+                    tmp_path = excel_path + ".tmp"
+                    wb.save(tmp_path)
+                    os.replace(tmp_path, excel_path)
                     logger.info(f"✅ Excel文件保存成功，已更新 {len(updated_sheets)} 个工作表")
                 except Exception as e:
                     logger.error(f"❌ 保存Excel文件时出错: {str(e)}")
@@ -1198,6 +1243,17 @@ class MarketDataAnalyzer:
         except Exception as e:
             logger.error(f"❌ 更新Excel过程中出错: {str(e)}", exc_info=True)
             return False
+        finally:
+            # 释放文件锁
+            try:
+                if lock_fd is not None:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                    lock_fd.close()
+                    logger.debug("已释放Excel文件锁")
+                    # 显式标记Excel已释放，供前端/后端完成判定
+                    logger.info("EXCEL_UNLOCKED")
+            except Exception:
+                pass
 
     @log_execution_time
     @retry_on_timeout
