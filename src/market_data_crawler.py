@@ -478,8 +478,28 @@ class MarketDataAnalyzer:
 
 
     def format_exchange_rate_date(self,raw_date):
-        # 解析中文月份
-        dt = datetime.strptime(raw_date, "%m月 %d, %Y")
+        # 兼容多种日期格式（中文和常见分隔符）
+        text = str(raw_date).strip()
+        candidates = [
+            "%Y年%m月%d日",   # 2025年09月15日
+            "%Y/%m/%d",      # 2025/09/15
+            "%Y-%m-%d",      # 2025-09-15
+            "%m月 %d, %Y",   # 09月 15, 2025（历史实现）
+            "%b %d, %Y",     # Sep 15, 2025（英文缩写）
+            "%B %d, %Y",     # September 15, 2025（英文全称）
+        ]
+
+        dt = None
+        for fmt in candidates:
+            try:
+                dt = datetime.strptime(text, fmt)
+                break
+            except ValueError:
+                continue
+
+        if dt is None:
+            logger.debug(f"无法解析汇率日期: '{raw_date}'，未匹配的格式。")
+            raise ValueError(f"无法解析日期: {raw_date}")
 
         # 判断操作系统
         if platform.system() == "Windows":
