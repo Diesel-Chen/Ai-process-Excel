@@ -249,8 +249,9 @@ class CrawlStats:
         return "\n".join(summary_lines)
 
 class MarketDataAnalyzer:
-    _driver = None  # 普通WebDriver实例（启用JavaScript）
+    _driver = None  # 当前WebDriver实例（按需启用/禁用JavaScript）
     _driver_lock = threading.RLock()  # 简单锁，防止并发初始化
+    _driver_js_disabled = None  # 当前driver是否禁用JS（None 表示未初始化）
 
     _exchange_rate_driver = None  # 专用于汇率数据的WebDriver实例（禁用JavaScript）
     _exchange_rate_driver_lock = threading.RLock()  # 汇率数据WebDriver的锁
@@ -295,6 +296,7 @@ class MarketDataAnalyzer:
         options.add_argument('--headless')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--no-sandbox')
+        options.add_argument('--single-process')  # 单进程模式，减子进程
         options.add_argument('--log-level=3')  # 仅显示致命错误
         options.add_argument('--start-maximized')
         options.add_argument('--ignore-certificate-errors')
@@ -318,18 +320,18 @@ class MarketDataAnalyzer:
         driver = None
         try:
             # 首先尝试使用Chrome
-            from webdriver_manager.chrome import ChromeDriverManager
+            # from webdriver_manager.chrome import ChromeDriverManager
 
-            driver_dir = ChromeDriverManager().install()
-            # 正确的chromedriver路径应该是目录中的chromedriver文件
-            driver_path = os.path.join(os.path.dirname(driver_dir), 'chromedriver')
+            # driver_dir = ChromeDriverManager().install()
+            # # 正确的chromedriver路径应该是目录中的chromedriver文件
+            # driver_path = os.path.join(os.path.dirname(driver_dir), 'chromedriver')
 
-            # 确保文件有执行权限
-            os.chmod(driver_path, 0o755)
+            # # 确保文件有执行权限
+            # os.chmod(driver_path, 0o755)
 
             # driver_path = ChromeDriverManager().install()
             # driver_path ='/Users/dieselchen/.wdm/drivers/chromedriver/mac64/134.0.6998.165/chromedriver-mac-x64/chromedriver'
-            # driver_path='/root/.wdm/drivers/chromedriver/linux64/140.0.7339.80/chromedriver-linux64/chromedriver'
+            driver_path='/root/.wdm/drivers/chromedriver/linux64/140.0.7339.80/chromedriver-linux64/chromedriver'
 
             service = Service(executable_path=driver_path)
 
@@ -413,87 +415,51 @@ class MarketDataAnalyzer:
         获取WebDriver实例，如果不存在则初始化
 
         Args:
-            driver_type: WebDriver类型，可选值：'default'(默认), 'exchange_rate'(汇率数据), 'daily'(日频数据), 'monthly'(月度数据)
+            driver_type: 'exchange_rate' 使用禁用JS的driver；其他类型启用JS。
+                         始终只保留一个driver，若JS开关不匹配则重建driver。
 
         Returns:
             WebDriver实例
         """
-        if driver_type == 'exchange_rate':
-            # 获取专用于汇率数据的WebDriver实例（禁用JavaScript）
-            with self._exchange_rate_driver_lock:
-                if self._exchange_rate_driver is None:
-                    self._exchange_rate_driver = self._init_driver(disable_javascript=True)
-                return self._exchange_rate_driver
-        elif driver_type == 'daily':
-            # 获取专用于日频数据的WebDriver实例
-            with self._daily_driver_lock:
-                if self._daily_driver is None:
-                    self._daily_driver = self._init_driver(disable_javascript=False)
-                return self._daily_driver
-        elif driver_type == 'monthly':
-            # 获取专用于月度数据的WebDriver实例
-            with self._monthly_driver_lock:
-                if self._monthly_driver is None:
-                    self._monthly_driver = self._init_driver(disable_javascript=False)
-                return self._monthly_driver
-        else:
-            # 获取普通WebDriver实例（启用JavaScript）
-            with self._driver_lock:
-                if self._driver is None:
-                    self._driver = self._init_driver(disable_javascript=False)
-                return self._driver
+        need_disable_js = True if driver_type == 'exchange_rate' else False
+        with self._driver_lock:
+            # 若未初始化或JS开关不匹配，则重建单一driver
+            if self._driver is None or self._driver_js_disabled != need_disable_js:
+                # 关闭旧driver
+                if self._driver is not None:
+                    try:
+                        self._driver.quit()
+                    except Exception:
+                        pass
+                    finally:
+                        self._driver = None
+                # 使用需要的JS配置重新初始化
+                self._driver = self._init_driver(disable_javascript=need_disable_js)
+                self._driver_js_disabled = need_disable_js
+            return self._driver
 
     def close_driver(self, driver_type='default'):
         """
         关闭WebDriver实例
 
         Args:
-            driver_type: WebDriver类型，可选值：'default'(默认), 'exchange_rate'(汇率数据), 'daily'(日频数据), 'monthly'(月度数据)
+            driver_type: 兼容参数（已忽略）。统一关闭单一WebDriver
         """
-        if driver_type == 'exchange_rate':
-            # 关闭汇率数据专用的WebDriver实例
-            with self._exchange_rate_driver_lock:
-                if self._exchange_rate_driver:
-                    try:
-                        self._exchange_rate_driver.quit()
-                        logger.info("汇率数据WebDriver已关闭")
-                    except Exception as e:
-                        logger.warning(f"关闭汇率数据WebDriver时出错: {str(e)}")
-                    finally:
-                        self._exchange_rate_driver = None
-        elif driver_type == 'daily':
-            # 关闭日频数据专用的WebDriver实例
-            with self._daily_driver_lock:
-                if self._daily_driver:
-                    try:
-                        self._daily_driver.quit()
-                        logger.info("日频数据WebDriver已关闭")
-                    except Exception as e:
-                        logger.warning(f"关闭日频数据WebDriver时出错: {str(e)}")
-                    finally:
-                        self._daily_driver = None
-        elif driver_type == 'monthly':
-            # 关闭月度数据专用的WebDriver实例
-            with self._monthly_driver_lock:
-                if self._monthly_driver:
-                    try:
-                        self._monthly_driver.quit()
-                        logger.info("月度数据WebDriver已关闭")
-                    except Exception as e:
-                        logger.warning(f"关闭月度数据WebDriver时出错: {str(e)}")
-                    finally:
-                        self._monthly_driver = None
-        else:
-            # 关闭普通WebDriver实例
-            with self._driver_lock:
-                if self._driver:
-                    try:
-                        self._driver.quit()
-                        logger.info("普通WebDriver已关闭")
-                    except Exception as e:
-                        logger.warning(f"关闭普通WebDriver时出错: {str(e)}")
-                    finally:
-                        self._driver = None
+        # 统一关闭单一WebDriver实例
+        with self._driver_lock:
+            if self._driver:
+                try:
+                    self._driver.quit()
+                    logger.info("WebDriver已关闭")
+                except Exception as e:
+                    logger.warning(f"关闭WebDriver时出错: {str(e)}")
+                finally:
+                    self._driver = None
+                    self._driver_js_disabled = None
+        # 兼容旧字段，确保全部置空
+        self._exchange_rate_driver = None
+        self._daily_driver = None
+        self._monthly_driver = None
 
     def get_random_user_agent(self):
         user_agents = [
@@ -953,21 +919,29 @@ class MarketDataAnalyzer:
 
     def update_excel(self):
         """
-        更新现有Excel文件，追加数据到对应sheet的最后一行（并发执行版本）
-        汇率数据、日频数据和月度数据分别使用不同的WebDriver实例并行爬取
+        更新现有Excel文件，追加数据到对应sheet的最后一行（顺序执行，单一WebDriver）
+        统一复用一个禁用JS的WebDriver，限制进程数量，降低系统负载；
+        设置全局超时（默认5分钟）并在超时时强制清理Chrome进程。
         """
         stats = CrawlStats()  # 创建统计对象
 
         try:
             results = {}
+            import gc
+            import subprocess
+            import time as _time
+            # 信号处理与总超时控制
+            try:
+                import signal
+            except Exception:
+                signal = None
 
-            # 创建进度跟踪器
+            # 计算总任务数并初始化进度
             total_tasks = len(config.CURRENCY_PAIRS) + len(config.DAILY_DATA_PAIRS) + len(config.MONTHLY_DATA_PAIRS)
             completed_tasks = 0
 
-            # 打印任务总览
             logger.info("=" * 50)
-            logger.info("🚀 开始数据爬取任务（三线程并发执行模式）")
+            logger.info("🚀 开始数据爬取任务（顺序执行，单一WebDriver）")
             logger.info("=" * 50)
             logger.info(f"📊 汇率数据: {len(config.CURRENCY_PAIRS)} 项")
             logger.info(f"📈 日频数据: {len(config.DAILY_DATA_PAIRS)} 项")
@@ -975,132 +949,133 @@ class MarketDataAnalyzer:
             logger.info(f"🔄 总任务数: {total_tasks} 项")
             logger.info("=" * 50)
 
-            # 初始化三个WebDriver实例
-            logger.info("⚙️ 初始化三个WebDriver实例...")
-            # WebDriver实例将通过get_driver()方法按需初始化
+            # 不提前初始化，让各爬取函数按需获取带正确JS配置的driver
 
-            # 更新进度的辅助函数
-            def update_progress(sheet_name, data_type, success=True, error_msg=None):
+            # Ctrl+C 安全退出：强制kill所有Chrome
+            def _signal_handler(sig, frame):
+                logger.info("强制关闭所有Chrome...")
+                try:
+                    subprocess.run(["pkill", "-f", "chrome"], check=False)
+                except Exception:
+                    pass
+                try:
+                    self.close_driver('default')
+                except Exception:
+                    pass
+                sys.exit(0)
+
+            if signal is not None:
+                try:
+                    signal.signal(signal.SIGINT, _signal_handler)
+                except Exception:
+                    # 非主线程/不支持平台，忽略
+                    pass
+
+            # 全局超时（秒）
+            GLOBAL_TIMEOUT = 300
+            deadline = time.time() + GLOBAL_TIMEOUT
+
+            def _update_progress(name, data_type, success=True, err=None):
                 nonlocal completed_tasks
                 completed_tasks += 1
-                progress = int(completed_tasks / total_tasks * 100)
+                progress = int(completed_tasks / total_tasks * 100) if total_tasks else 100
                 progress_bar = "█" * (progress // 5) + "░" * (20 - progress // 5)
-
                 if success:
-                    logger.info(f"✅ [{progress:3d}%] |{progress_bar}| {sheet_name} ({data_type})")
-                elif error_msg:
-                    logger.error(f"❌ [{progress:3d}%] |{progress_bar}| {sheet_name} ({data_type}): {error_msg}")
+                    logger.info(f"✅ [{progress:3d}%] |{progress_bar}| {name} ({data_type})")
+                elif err:
+                    logger.error(f"❌ [{progress:3d}%] |{progress_bar}| {name} ({data_type}): {err}")
                 else:
-                    logger.warning(f"⚠️ [{progress:3d}%] |{progress_bar}| {sheet_name} ({data_type}): 数据为空")
+                    logger.warning(f"⚠️ [{progress:3d}%] |{progress_bar}| {name} ({data_type}): 数据为空")
 
-            # 定义爬取函数
-            def crawl_exchange_rate_task(pair, url):
+            def _timed_out():
+                return time.time() > deadline
+
+            # 1) 汇率数据（顺序）
+            logger.info("开始爬取汇率数据（顺序执行）...")
+            for pair, url in config.CURRENCY_PAIRS.items():
+                if _timed_out():
+                    logger.error("任务超时，强制kill Chrome")
+                    try:
+                        subprocess.run(["pkill", "-f", "chrome"], check=False)
+                    except Exception:
+                        pass
+                    break
                 try:
-                    # 使用专用于汇率数据的WebDriver
-                    driver = self.get_driver(driver_type='exchange_rate')
                     data = self.crawl_exchange_rate(url)
                     if data:
-                        with results_lock:
-                            results[pair] = data
+                        results[pair] = data
                         stats.add_success(pair)
-                        update_progress(pair, "currency")
-                        return True
+                        _update_progress(pair, "currency")
                     else:
                         stats.add_failure(pair, "爬取返回空数据")
-                        update_progress(pair, "currency", False)
-                        return False
+                        _update_progress(pair, "currency", False)
                 except Exception as e:
                     stats.add_failure(pair, str(e))
-                    update_progress(pair, "currency", False, str(e))
-                    return False
+                    _update_progress(pair, "currency", False, str(e))
+                finally:
+                    gc.collect()
+                    _time.sleep(1)
 
-            def crawl_daily_task(sheet_name, info):
+            # 2) 日频数据（顺序）
+            logger.info("开始爬取日频数据（顺序执行）...")
+            for sheet_name, info in config.DAILY_DATA_PAIRS.items():
+                if _timed_out():
+                    logger.error("任务超时，强制kill Chrome")
+                    try:
+                        subprocess.run(["pkill", "-f", "chrome"], check=False)
+                    except Exception:
+                        pass
+                    break
                 try:
-                    # 使用专用于日频数据的WebDriver
-                    driver = self.get_driver(driver_type='daily')
                     crawler_method = getattr(self, info['crawler'])
                     data = crawler_method(info['url'])
-
                     if data:
-                        with results_lock:
+                        results[sheet_name] = data
+                        stats.add_success(sheet_name)
+                        _update_progress(sheet_name, "daily")
+                    else:
+                        stats.add_failure(sheet_name, "爬取返回空数据")
+                        _update_progress(sheet_name, "daily", False)
+                except Exception as e:
+                    stats.add_failure(sheet_name, str(e))
+                    _update_progress(sheet_name, "daily", False, str(e))
+                finally:
+                    gc.collect()
+                    _time.sleep(1)
+
+            # 3) 月度数据（顺序）
+            logger.info("开始爬取月度数据（顺序执行）...")
+            for sheet_name, info in config.MONTHLY_DATA_PAIRS.items():
+                if _timed_out():
+                    logger.error("任务超时，强制kill Chrome")
+                    try:
+                        subprocess.run(["pkill", "-f", "chrome"], check=False)
+                    except Exception:
+                        pass
+                    break
+                try:
+                    crawler_method = getattr(self, info['crawler'])
+                    data = crawler_method(info['url'])
+                    if data:
+                        if isinstance(data, list) and len(data) > 0:
+                            results[sheet_name] = data[0]
+                        else:
                             results[sheet_name] = data
                         stats.add_success(sheet_name)
-                        update_progress(sheet_name, "daily")
-                        return True
+                        _update_progress(sheet_name, "monthly")
                     else:
                         stats.add_failure(sheet_name, "爬取返回空数据")
-                        update_progress(sheet_name, "daily", False)
-                        return False
+                        _update_progress(sheet_name, "monthly", False)
                 except Exception as e:
                     stats.add_failure(sheet_name, str(e))
-                    update_progress(sheet_name, "daily", False, str(e))
-                    return False
+                    _update_progress(sheet_name, "monthly", False, str(e))
+                finally:
+                    gc.collect()
+                    _time.sleep(1)
 
-            def crawl_monthly_task(sheet_name, info):
-                try:
-                    # 使用专用于月度数据的WebDriver
-                    driver = self.get_driver(driver_type='monthly')
-                    crawler_method = getattr(self, info['crawler'])
-                    data = crawler_method(info['url'])
-
-                    if data:
-                        # 对于月度数据，只保留第一行
-                        if isinstance(data, list) and len(data) > 0:
-                            with results_lock:
-                                results[sheet_name] = data[0]
-                        else:
-                            with results_lock:
-                                results[sheet_name] = data
-                        stats.add_success(sheet_name)
-                        update_progress(sheet_name, "monthly")
-                        return True
-                    else:
-                        stats.add_failure(sheet_name, "爬取返回空数据")
-                        update_progress(sheet_name, "monthly", False)
-                        return False
-                except Exception as e:
-                    stats.add_failure(sheet_name, str(e))
-                    update_progress(sheet_name, "monthly", False, str(e))
-                    return False
-
-            # 使用线程锁保护共享资源
-            results_lock = threading.RLock()
-
-            # 创建三个线程池，分别用于汇率数据、日频数据和月度数据
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as exchange_rate_executor, \
-                 concurrent.futures.ThreadPoolExecutor(max_workers=1) as daily_executor, \
-                 concurrent.futures.ThreadPoolExecutor(max_workers=1) as monthly_executor:
-
-                # 1. 提交汇率数据爬取任务
-                logger.info("开始爬取汇率数据（并发执行）...")
-                exchange_rate_futures = []
-                for pair, url in config.CURRENCY_PAIRS.items():
-                    future = exchange_rate_executor.submit(crawl_exchange_rate_task, pair, url)
-                    exchange_rate_futures.append(future)
-
-                # 2. 提交日频数据爬取任务
-                logger.info("开始爬取日频数据（并发执行）...")
-                daily_futures = []
-                for sheet_name, info in config.DAILY_DATA_PAIRS.items():
-                    future = daily_executor.submit(crawl_daily_task, sheet_name, info)
-                    daily_futures.append(future)
-
-                # 3. 提交月度数据爬取任务
-                logger.info("开始爬取月度数据（并发执行）...")
-                monthly_futures = []
-                for sheet_name, info in config.MONTHLY_DATA_PAIRS.items():
-                    future = monthly_executor.submit(crawl_monthly_task, sheet_name, info)
-                    monthly_futures.append(future)
-
-                # 等待所有任务完成
-                logger.info("等待所有爬取任务完成...")
-                concurrent.futures.wait(exchange_rate_futures + daily_futures + monthly_futures)
-
-            # 关闭WebDriver实例
-            logger.info("爬取任务完成，关闭WebDriver实例...")
-            self.close_driver(driver_type='exchange_rate')  # 关闭汇率数据WebDriver
-            self.close_driver(driver_type='daily')         # 关闭日频数据WebDriver
-            self.close_driver(driver_type='monthly')       # 关闭月度数据WebDriver
+            # 单一WebDriver在此阶段可选择关闭以释放资源
+            logger.info("爬取任务完成，关闭WebDriver实例以释放资源...")
+            self.close_driver('default')
 
             logger.info("=" * 50)
             logger.info("🏁 数据爬取完成，准备更新Excel文件...")

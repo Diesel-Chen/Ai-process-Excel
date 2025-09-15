@@ -114,13 +114,13 @@ def resource_path(relative_path):
 
 # 原有的汇率数据对保持不变
 CURRENCY_PAIRS = {
-    'USD CNY': 'https://cn.investing.com/currencies/usd-cny-historical-data',
-    'EUR CNY': 'https://cn.investing.com/currencies/eur-cny-historical-data',
-    'EUR USD': 'https://cn.investing.com/currencies/eur-usd-historical-data',
-    'HKD CNY': 'https://cn.investing.com/currencies/hkd-cny-historical-data',
-    'CNY HKD': 'https://cn.investing.com/currencies/cny-hkd-historical-data',
-    'JPY USD': 'https://cn.investing.com/currencies/jpy-usd-historical-data',
-    'USD 10Y': 'https://cn.investing.com/rates-bonds/u.s.-10-year-bond-yield-historical-data'
+    # 'USD CNY': 'https://cn.investing.com/currencies/usd-cny-historical-data',
+    # 'EUR CNY': 'https://cn.investing.com/currencies/eur-cny-historical-data',
+    # 'EUR USD': 'https://cn.investing.com/currencies/eur-usd-historical-data',
+    # 'HKD CNY': 'https://cn.investing.com/currencies/hkd-cny-historical-data',
+    # 'CNY HKD': 'https://cn.investing.com/currencies/cny-hkd-historical-data',
+    # 'JPY USD': 'https://cn.investing.com/currencies/jpy-usd-historical-data',
+    # 'USD 10Y': 'https://cn.investing.com/rates-bonds/u.s.-10-year-bond-yield-historical-data'
 }
 
 # 日频数据配对，每个数据源都包含URL和对应的爬虫方法
@@ -129,59 +129,59 @@ DAILY_DATA_PAIRS = {
         'url': 'https://index.mysteel.com/xpic/detail.html?tabName=kuangsi',
         'crawler': 'crawl_steel_price'
     },
-    'SOFR': {
-        'url': 'https://www.newyorkfed.org/markets/reference-rates/sofr',
-        'crawler': 'crawl_sofr'
-    },
-    'ESTER': {
-        'url': 'https://www.euribor-rates.eu/en/ester/',
-        'crawler': 'crawl_ester'
-    },
-    'JPY rate': {
-        'url': 'https://www.global-rates.com/en/interest-rates/central-banks/9/japanese-boj-overnight-call-rate/',
-        'crawler': 'crawl_jpy_rate'
-    },
-    'Shibor': {
-        'url': 'https://www.shibor.org/shibor/shiborquote/',
-        'crawler': 'crawl_shibor_rate'
-    },
-    'LPR': {
-        'url': 'https://www.shibor.org/shibor/lprquote/',
-        'crawler': 'crawl_lpr'
-    },
+    # 'SOFR': {
+    #     'url': 'https://www.newyorkfed.org/markets/reference-rates/sofr',
+    #     'crawler': 'crawl_sofr'
+    # },
+    # 'ESTER': {
+    #     'url': 'https://www.euribor-rates.eu/en/ester/',
+    #     'crawler': 'crawl_ester'
+    # },
+    # 'JPY rate': {
+    #     'url': 'https://www.global-rates.com/en/interest-rates/central-banks/9/japanese-boj-overnight-call-rate/',
+    #     'crawler': 'crawl_jpy_rate'
+    # },
+    # 'Shibor': {
+    #     'url': 'https://www.shibor.org/shibor/shiborquote/',
+    #     'crawler': 'crawl_shibor_rate'
+    # },
+    # 'LPR': {
+    #     'url': 'https://www.shibor.org/shibor/lprquote/',
+    #     'crawler': 'crawl_lpr'
+    # },
 }
 
 
 # 月度数据配对，每个数据源都包含URL和对应的爬虫方法
 MONTHLY_DATA_PAIRS = {
-    'US Interest Rate': {
-        'url': 'https://data.eastmoney.com/cjsj/foreign_0_22.html',
-        'crawler': 'crawl_us_interest_rate'
-    },
-    'Import and Export': {
-        'url': 'https://data.eastmoney.com/cjsj/hgjck.html',
-        'crawler': 'crawl_import_export'
-    },
-    'Money Supply': {
-        'url': 'https://data.eastmoney.com/cjsj/hbgyl.html',
-        'crawler': 'crawl_money_supply'
-    },
-    'PPI': {
-        'url': 'https://data.eastmoney.com/cjsj/ppi.html',
-        'crawler': 'crawl_ppi'
-    },
-    'CPI': {
-        'url': 'https://data.eastmoney.com/cjsj/cpi.html',
-        'crawler': 'crawl_cpi'
-    },
-    'PMI': {
-        'url': 'https://data.eastmoney.com/cjsj/pmi.html',
-        'crawler': 'crawl_pmi'
-    },
-    'New Bank Loan Addition': {
-        'url': 'https://data.eastmoney.com/cjsj/xzxd.html',
-        'crawler': 'crawl_new_bank_loan_addition'
-    }
+    # 'US Interest Rate': {
+    #     'url': 'https://data.eastmoney.com/cjsj/foreign_0_22.html',
+    #     'crawler': 'crawl_us_interest_rate'
+    # },
+    # 'Import and Export': {
+    #     'url': 'https://data.eastmoney.com/cjsj/hgjck.html',
+    #     'crawler': 'crawl_import_export'
+    # },
+    # 'Money Supply': {
+    #     'url': 'https://data.eastmoney.com/cjsj/hbgyl.html',
+    #     'crawler': 'crawl_money_supply'
+    # },
+    # 'PPI': {
+    #     'url': 'https://data.eastmoney.com/cjsj/ppi.html',
+    #     'crawler': 'crawl_ppi'
+    # },
+    # 'CPI': {
+    #     'url': 'https://data.eastmoney.com/cjsj/cpi.html',
+    #     'crawler': 'crawl_cpi'
+    # },
+    # 'PMI': {
+    #     'url': 'https://data.eastmoney.com/cjsj/pmi.html',
+    #     'crawler': 'crawl_pmi'
+    # },
+    # 'New Bank Loan Addition': {
+    #     'url': 'https://data.eastmoney.com/cjsj/xzxd.html',
+    #     'crawler': 'crawl_new_bank_loan_addition'
+    # }
 }
 
 # Excel表格中各数据类型的列定义

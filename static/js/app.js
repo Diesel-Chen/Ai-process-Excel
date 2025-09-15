@@ -15,6 +15,23 @@ let logFilters = {
   ERROR: true,
 };
 
+// 前端忽略的日志模式（不渲染到页面）
+// 1) 本地访问日志 127.0.0.1
+// 2) webdriver_manager 缓存提示
+const IGNORED_LOG_PATTERNS = [
+  /127\.0\.0\.1\b/,
+  /found in cache/i,
+];
+
+function shouldIgnoreLog(log) {
+  try {
+    const text = `${log.timestamp} ${log.level} ${log.message}`;
+    return IGNORED_LOG_PATTERNS.some((re) => re.test(text));
+  } catch (e) {
+    return false;
+  }
+}
+
 // 添加过滤器UI
 function createFilterUI() {
   const filterContainer = document.createElement("div");
@@ -208,9 +225,11 @@ function connectLogStream(jobId = null) {
           return;
         }
 
-        // 只显示DEBUG级别以上的日志
+        // 只显示DEBUG级别以上的日志，且过滤掉本地访问类/缓存提示类“系统日志”
         if (["DEBUG", "INFO", "WARNING", "ERROR"].includes(log.level)) {
-          appendLog(log);
+          if (!shouldIgnoreLog(log)) {
+            appendLog(log);
+          }
         }
       });
     } catch (error) {
@@ -449,6 +468,20 @@ function renderQueue(data) {
   const historyEl = document.getElementById("queueHistory");
   if (!runningEl || !queuedEl || !historyEl) return;
 
+  // 时间格式化工具（显示“加入队列时间”等）
+  function formatTime(ts) {
+    if (!ts) return "-";
+    const d = new Date(ts * 1000);
+    const pad = (n) => (n < 10 ? "0" + n : "" + n);
+    const yyyy = d.getFullYear();
+    const mm = pad(d.getMonth() + 1);
+    const dd = pad(d.getDate());
+    const hh = pad(d.getHours());
+    const mi = pad(d.getMinutes());
+    const ss = pad(d.getSeconds());
+    return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+  }
+
   // Running
   if (data.running) {
     runningEl.innerHTML = `
@@ -456,6 +489,7 @@ function renderQueue(data) {
         <div>
           <div>Job ID: <code>${data.running.id}</code></div>
           <div class="small text-muted">状态：${data.running.status}</div>
+          <div class="small text-muted">加入队列：${formatTime(data.running.enqueued_at)}</div>
         </div>
         <span class="badge bg-primary">运行中</span>
       </div>`;
@@ -474,6 +508,7 @@ function renderQueue(data) {
           <div>
             <div>Job ID: <code>${j.id}</code></div>
             <div class="small text-muted">排队位置：第 ${j.position} 位</div>
+            <div class="small text-muted">加入队列：${formatTime(j.enqueued_at)}</div>
           </div>
           <span class="badge bg-warning text-dark">排队中</span>
         </div>`
