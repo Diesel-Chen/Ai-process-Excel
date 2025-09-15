@@ -1,3 +1,18 @@
+def is_system_log(message: str) -> bool:
+    """判断是否为系统级访问/噪声日志，前端无需展示。"""
+    if not message:
+        return False
+    patterns = [
+        r"\b127\.0\.0\.1\b\s*-\s*-\s*\[",  # Flask/Werkzeug 访问日志
+        r"\bGET\s+/api/",                        # API 访问
+        r"======\s*WebDriver manager\s*======",  # webdriver_manager 噪声
+        r"found in cache",                        # 驱动缓存提示
+    ]
+    for p in patterns:
+        if re.search(p, message, re.IGNORECASE):
+            return True
+    return False
+
 from flask import Flask, jsonify, send_file, Response, stream_with_context, request
 import json
 from flask_cors import CORS
@@ -10,6 +25,7 @@ import queue
 import time
 from datetime import datetime
 import uuid
+import re
 
 # 导入爬虫模块
 try:
@@ -58,6 +74,16 @@ jobs = {}
 current_job_id = None
 job_log_buffers = {}  # {job_id: [log_entry, ...]}
 
+# 全局日志序号（用于前端精确去重）
+_log_seq = 0
+_log_seq_lock = threading.RLock()
+
+def next_log_seq() -> int:
+    global _log_seq
+    with _log_seq_lock:
+        _log_seq += 1
+        return _log_seq
+
 # 自定义日志处理器，将日志放入队列
 class QueueHandler(logging.Handler):
     def __init__(self, log_queue):
@@ -69,6 +95,9 @@ class QueueHandler(logging.Handler):
             # 仅取原始消息体，避免把时间/级别再次拼进 message，防止前端出现
             # "14:xx:xx - INFO - 14:xx:xx - INFO - ..." 的重复
             msg = record.getMessage()
+            # 过滤系统访问日志/噪声，避免污染任务日志
+            if is_system_log(msg):
+                return
             # 绑定当前 job_id（若有）
             try:
                 jid = current_job_id
@@ -79,7 +108,8 @@ class QueueHandler(logging.Handler):
                 'level': record.levelname,
                 'message': msg,
                 'timestamp': datetime.now().strftime('%H:%M:%S'),
-                'job_id': jid
+                'job_id': jid,
+                'seq': next_log_seq(),
             }
 
             # 全局日志队列（兼容）
@@ -206,20 +236,21 @@ def execute_crawl_job(job_id: str):
         time.sleep(1)
         crawler_running = False
         # 追加结束消息到该 job 的缓冲与全局队列，确保前端能接收到
-        end_msgs = [
-            {
-                "level": "INFO",
-                "message": "=== 数据更新完成 ===",
-                "timestamp": datetime.now().strftime('%H:%M:%S'),
-                "job_id": job_id
-            },
-            {
-                "level": "INFO",
-                "message": "SHOW_SUMMARY",
-                "timestamp": datetime.now().strftime('%H:%M:%S'),
-                "job_id": job_id
-            }
-        ]
+        end_msgs = []
+        end_msgs.append({
+            "level": "INFO",
+            "message": "=== 数据更新完成 ===",
+            "timestamp": datetime.now().strftime('%H:%M:%S'),
+            "job_id": job_id,
+            "seq": next_log_seq(),
+        })
+        end_msgs.append({
+            "level": "INFO",
+            "message": "SHOW_SUMMARY",
+            "timestamp": datetime.now().strftime('%H:%M:%S'),
+            "job_id": job_id,
+            "seq": next_log_seq(),
+        })
         with jobs_lock:
             buf = job_log_buffers.setdefault(job_id, [])
             buf.extend(end_msgs)
@@ -342,7 +373,7 @@ def get_logs():
     def generate_for_job(jid: str):
         # 初次发送该任务现有的所有日志
         with jobs_lock:
-            buf = list(job_log_buffers.get(jid, []))
+            buf = [entry for entry in job_log_buffers.get(jid, []) if not is_system_log(entry.get('message',''))]
         if buf:
             json_str = json.dumps(buf, ensure_ascii=False)
             yield f"data: {json_str}\n\n"
@@ -353,7 +384,7 @@ def get_logs():
         while True:
             time.sleep(0.5)
             with jobs_lock:
-                buf_now = job_log_buffers.get(jid, [])
+                buf_now = [entry for entry in job_log_buffers.get(jid, []) if not is_system_log(entry.get('message',''))]
                 job_state = jobs.get(jid, {})
                 is_running_this_job = current_job_id == jid and crawler_running
 
@@ -372,7 +403,7 @@ def get_logs():
 
     def generate_global():
         # 旧行为：推送全局日志（可能包含其他任务日志）
-        logs = list(log_queue.queue)
+        logs = [entry for entry in list(log_queue.queue) if not is_system_log(entry.get('message',''))]
         if logs:
             json_str = json.dumps(logs, ensure_ascii=False)
             yield f"data: {json_str}\n\n"
@@ -380,7 +411,7 @@ def get_logs():
         last_size = len(logs)
         while True:
             time.sleep(0.5)
-            current_logs = list(log_queue.queue)
+            current_logs = [entry for entry in list(log_queue.queue) if not is_system_log(entry.get('message',''))]
             if len(current_logs) > last_size:
                 new_logs = current_logs[last_size:]
                 json_str = json.dumps(new_logs, ensure_ascii=False)

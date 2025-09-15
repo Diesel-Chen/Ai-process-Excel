@@ -320,18 +320,18 @@ class MarketDataAnalyzer:
         driver = None
         try:
             # 首先尝试使用Chrome
-            # from webdriver_manager.chrome import ChromeDriverManager
+            from webdriver_manager.chrome import ChromeDriverManager
 
-            # driver_dir = ChromeDriverManager().install()
-            # # 正确的chromedriver路径应该是目录中的chromedriver文件
-            # driver_path = os.path.join(os.path.dirname(driver_dir), 'chromedriver')
+            driver_dir = ChromeDriverManager().install()
+            # 正确的chromedriver路径应该是目录中的chromedriver文件
+            driver_path = os.path.join(os.path.dirname(driver_dir), 'chromedriver')
 
-            # # 确保文件有执行权限
-            # os.chmod(driver_path, 0o755)
+            # 确保文件有执行权限
+            os.chmod(driver_path, 0o755)
 
             # driver_path = ChromeDriverManager().install()
             # driver_path ='/Users/dieselchen/.wdm/drivers/chromedriver/mac64/134.0.6998.165/chromedriver-mac-x64/chromedriver'
-            driver_path='/root/.wdm/drivers/chromedriver/linux64/140.0.7339.80/chromedriver-linux64/chromedriver'
+            # driver_path='/root/.wdm/drivers/chromedriver/linux64/140.0.7339.80/chromedriver-linux64/chromedriver'
 
             service = Service(executable_path=driver_path)
 

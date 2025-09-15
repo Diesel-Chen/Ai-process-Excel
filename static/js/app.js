@@ -6,6 +6,8 @@ let jobSummaryReceived = false; // 本次任务是否已收到 SHOW_SUMMARY
 let excelUnlocked = false; // 本次任务是否已释放 Excel 文件锁
 let firstCompletedAt = null; // 第一次检测到 status=completed 的时间戳
 let apiBaseUrl = "/api"; // API基础路径，可根据部署环境修改
+let modalEventSource = null; // 任务日志弹窗的 SSE 连接
+let modalSeenLogKeys = null; // 当前弹窗中已渲染日志的去重集合
 
 // 添加日志过滤状态
 let logFilters = {
@@ -487,7 +489,7 @@ function renderQueue(data) {
     runningEl.innerHTML = `
       <div class="list-group-item d-flex justify-content-between align-items-center">
         <div>
-          <div>Job ID: <code>${data.running.id}</code></div>
+          <div>Job ID: <a href="#" class="job-log-link" data-job-id="${data.running.id}" data-enqueued-at="${data.running.enqueued_at || ''}"><code>${data.running.id}</code></a></div>
           <div class="small text-muted">状态：${data.running.status}</div>
           <div class="small text-muted">加入队列：${formatTime(data.running.enqueued_at)}</div>
         </div>
@@ -506,7 +508,7 @@ function renderQueue(data) {
         (j) => `
         <div class="list-group-item d-flex justify-content-between align-items-center">
           <div>
-            <div>Job ID: <code>${j.id}</code></div>
+            <div>Job ID: <a href="#" class="job-log-link" data-job-id="${j.id}" data-enqueued-at="${j.enqueued_at || ''}"><code>${j.id}</code></a></div>
             <div class="small text-muted">排队位置：第 ${j.position} 位</div>
             <div class="small text-muted">加入队列：${formatTime(j.enqueued_at)}</div>
           </div>
@@ -529,8 +531,9 @@ function renderQueue(data) {
         return `
         <div class="list-group-item d-flex justify-content-between align-items-center">
           <div>
-            <div>Job ID: <code>${j.id}</code></div>
+            <div>Job ID: <a href="#" class="job-log-link" data-job-id="${j.id}" data-enqueued-at="${j.enqueued_at || ''}"><code>${j.id}</code></a></div>
             <div class="small text-muted">状态：${j.status}${j.error ? '，错误：' + j.error : ''}</div>
+            <div class="small text-muted">加入队列：${formatTime(j.enqueued_at)}</div>
           </div>
           ${badge}
         </div>`;
@@ -538,6 +541,98 @@ function renderQueue(data) {
       .join("");
   } else {
     historyEl.innerHTML = `<div class="list-group-item">暂无历史</div>`;
+  }
+
+  // 绑定 Job 日志弹窗事件
+  bindJobLogLinks();
+}
+
+// 绑定“Job ID”点击事件，打开日志弹窗并接入该 job 的日志 SSE
+function bindJobLogLinks() {
+  document.querySelectorAll('.job-log-link').forEach((a) => {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      const jobId = a.getAttribute('data-job-id');
+      const enq = a.getAttribute('data-enqueued-at');
+      openJobLogModal(jobId, enq);
+    });
+  });
+}
+
+function openJobLogModal(jobId, enqueuedAt) {
+  // 元信息
+  const metaEl = document.getElementById('jobLogMeta');
+  const container = document.getElementById('jobLogContainer');
+  if (!metaEl || !container) return;
+
+  metaEl.textContent = `Job ID: ${jobId}  |  加入队列：${enqueuedAt ? new Date(enqueuedAt * 1000).toLocaleString() : '-'}`;
+  container.innerHTML = '';
+  // 重置去重集合
+  modalSeenLogKeys = new Set();
+
+  // 关闭旧的 SSE 连接
+  if (modalEventSource) {
+    try { modalEventSource.close(); } catch (_) {}
+    modalEventSource = null;
+  }
+
+  // 打开 SSE 读取该 job 的日志
+  const url = `${apiBaseUrl}/logs?job_id=${encodeURIComponent(jobId)}`;
+  modalEventSource = new EventSource(url);
+
+  modalEventSource.onmessage = (event) => {
+    try {
+      const logs = JSON.parse(event.data);
+      if (!Array.isArray(logs)) return;
+      const autoChk = document.getElementById('jobLogAutoScroll');
+      const nearBottom = () => {
+        const delta = container.scrollHeight - (container.scrollTop + container.clientHeight);
+        return delta < 40; // 40px 内认为靠近底部
+      };
+      logs.forEach((log) => {
+        if (!log || !log.level || !log.message || !log.timestamp) return;
+        if (!shouldIgnoreLog(log)) {
+          // 优先使用后端提供的全局递增 seq 做严格去重；若无 seq 再回退到 复合键
+          const key = (log.seq !== undefined && log.seq !== null)
+            ? `seq:${log.seq}`
+            : `${log.timestamp}|${log.level}|${log.message}`;
+          if (modalSeenLogKeys && modalSeenLogKeys.has(key)) {
+            return; // 已渲染，跳过
+          }
+          const div = document.createElement('div');
+          div.className = `log-entry ${log.level.toLowerCase()}`;
+          div.textContent = `${log.timestamp} - ${log.level} - ${log.message}`;
+          container.appendChild(div);
+          if (modalSeenLogKeys) modalSeenLogKeys.add(key);
+          // 仅在勾选“自动跟随最新”且用户当前接近底部时自动滚动，避免阅读历史时跳动
+          if (autoChk && autoChk.checked && nearBottom()) {
+            container.scrollTop = container.scrollHeight;
+          }
+        }
+      });
+    } catch (_) {}
+  };
+
+  modalEventSource.onerror = () => {
+    // 弹窗内的 SSE 出错时静默处理，可能是流结束
+  };
+
+  // 打开 Bootstrap 弹窗
+  try {
+    const modalEl = document.getElementById('jobLogModal');
+    if (!modalEl) return;
+    const modal = new bootstrap.Modal(modalEl);
+    modal.show();
+
+    // 弹窗关闭时断开 SSE
+    modalEl.addEventListener('hidden.bs.modal', () => {
+      if (modalEventSource) {
+        try { modalEventSource.close(); } catch (_) {}
+        modalEventSource = null;
+      }
+    }, { once: true });
+  } catch (e) {
+    console.error('打开日志弹窗失败，是否已引入 Bootstrap JS?', e);
   }
 }
 
